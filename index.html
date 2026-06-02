@@ -63,13 +63,51 @@ const gcalUrl = (title, start, end, loc, det) => {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${start.replace(/-/g,"")}/${end.replace(/-/g,"")}&location=${encodeURIComponent(loc||"")}&details=${encodeURIComponent(det||"")}`;
 };
 
-/* ── localStorage persistence ── */
+/* ── persistence ──
+   localStorage is the instant local cache; the Google Sheet (via /api/sheet)
+   is the shared source of truth that syncs across every device. On load we
+   hydrate from the Sheet; on every change we write through to both. */
 function load(key, fallback) {
   try { const v = localStorage.getItem("str_"+key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
 }
 function save(key, val) {
   try { localStorage.setItem("str_"+key, JSON.stringify(val)); } catch(e) { console.error(e); }
 }
+// Pull the full state from the Sheet. Returns null if the backend isn't reachable.
+async function remoteLoadAll() {
+  try {
+    const r = await fetch("/api/sheet", { method:"GET" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+// Write one key back to the Sheet (fire-and-forget; localStorage already holds it).
+function remoteSave(key, val) {
+  try {
+    fetch("/api/sheet", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ action:"set", key, value: val }),
+    }).catch(e=>console.error("remoteSave",e));
+  } catch(e) { console.error(e); }
+}
+// Guests submit a booking request straight to the Sheet (public, no admin token).
+function remoteAddRequest(request) {
+  try {
+    fetch("/api/sheet", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ action:"addRequest", request }),
+    }).catch(e=>console.error("remoteAddRequest",e));
+  } catch(e) { console.error(e); }
+}
+// Unique, human-friendly booking code, e.g. "TRA-7K2QX".
+function genCode() {
+  const A = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no ambiguous I/O/0/1/L
+  let s = ""; for (let i=0;i<5;i++) s += A[Math.floor(Math.random()*A.length)];
+  return "TRA-" + s;
+}
+const TEST_CODE = "TEST1234"; // always-valid code for testing the guest portal
 
 function useIsMobile(bp=820){
   const [m,setM]=useState(typeof window!=="undefined" && window.innerWidth<bp);
@@ -310,6 +348,15 @@ function App() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [lbIndex, setLbIndex] = useState(null);
 
+  // guest booking portal ("My Booking" — enter code → guide + message owner)
+  const [portalOpen, setPortalOpen] = useState(false);
+  const [codeInput, setCodeInput] = useState("");
+  const [portalBk, setPortalBk] = useState(null); // matched booking, or sample for TEST code
+  const [codeErr, setCodeErr] = useState("");
+  const [msgText, setMsgText] = useState("");
+  const [msgSent, setMsgSent] = useState(false);
+  const [msgErr, setMsgErr] = useState("");
+
   // admin
   const [aTab, setATab] = useState("property");
   const [editId, setEditId] = useState(null);
@@ -320,11 +367,25 @@ function App() {
   const [pa, setPa] = useState("");
   const [photoUrl, setPhotoUrl] = useState("");
 
-  // save wrappers
-  const sConfig = (c)=>{setConfig(c);save("config",c);};
-  const sBookings = (b)=>{setBookings(b);save("bookings",b);};
-  const sPricing = (p)=>{setPricing(p);save("pricing",p);};
-  const sRequests = (r)=>{setRequests(r);save("requests",r);};
+  // save wrappers — update React state, the local cache, and the shared Sheet
+  const sConfig = (c)=>{setConfig(c);save("config",c);remoteSave("config",c);};
+  const sBookings = (b)=>{setBookings(b);save("bookings",b);remoteSave("bookings",b);};
+  const sPricing = (p)=>{setPricing(p);save("pricing",p);remoteSave("pricing",p);};
+  const sRequests = (r)=>{setRequests(r);save("requests",r);remoteSave("requests",r);};
+
+  // Hydrate from the Sheet on first load so every device sees the same data.
+  const [synced, setSynced] = useState(false);
+  useEffect(()=>{
+    let alive = true;
+    remoteLoadAll().then(d=>{
+      if(!alive || !d) return;
+      if(d.config)   { const c={...defaultConfig,...d.config}; setConfig(c); save("config",c); }
+      if(d.bookings) { setBookings(d.bookings); save("bookings",d.bookings); }
+      if(d.pricing)  { setPricing(d.pricing);  save("pricing",d.pricing); }
+      if(d.requests) { setRequests(d.requests); save("requests",d.requests); }
+    }).finally(()=>{ if(alive) setSynced(true); });
+    return ()=>{ alive=false; };
+  },[]);
 
   const prevMo = ()=>{if(mo===0){setMo(11);setYr(y=>y-1);}else setMo(m=>m-1);};
   const nextMo = ()=>{if(mo===11){setMo(0);setYr(y=>y+1);}else setMo(m=>m+1);};
@@ -354,7 +415,9 @@ function App() {
   const openEdit = (b)=>{setBf({...b});setEditId(b.id);setBkOpen(true);};
   const saveBk = ()=>{
     if(!bf.checkIn||!bf.checkOut) return;
-    const updated = editId ? bookings.map(b=>b.id===editId?{...bf,id:editId}:b) : [...bookings,{...bf,id:Date.now().toString()}];
+    const updated = editId
+      ? bookings.map(b=>b.id===editId?{...bf,id:editId,code:b.code||bf.code||genCode()}:b)
+      : [...bookings,{...bf,id:Date.now().toString(),code:genCode()}];
     sBookings(updated);setBkOpen(false);setEditId(null);
   };
   const delBk = (id)=>{sBookings(bookings.filter(b=>b.id!==id));setBkOpen(false);setEditId(null);};
@@ -367,14 +430,46 @@ function App() {
   };
 
   const acceptReq = (req)=>{
-    sBookings([...bookings,{id:Date.now().toString(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed"}]);
+    sBookings([...bookings,{id:Date.now().toString(),code:genCode(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed"}]);
     sRequests(requests.filter(r=>r.id!==req.id));
   };
 
   const submitReq = ()=>{
     if(!gName||!selA||!selB) return;
-    sRequests([...requests,{id:Date.now().toString(),guestName:gName,guestEmail:gEmail,guestPhone:gPhone,checkIn:selA,checkOut:selB,totalPrice:total,notes:gNotes,createdAt:new Date().toISOString()}]);
+    const req = {id:Date.now().toString(),guestName:gName,guestEmail:gEmail,guestPhone:gPhone,checkIn:selA,checkOut:selB,totalPrice:total,notes:gNotes,createdAt:new Date().toISOString()};
+    setRequests(rs=>[...rs,req]); save("requests",[...requests,req]); // local cache
+    remoteAddRequest(req); // server-side append — never clobbers other devices' requests
     setSent(true);setGName("");setGEmail("");setGPhone("");setGNotes("");setSelA(null);setSelB(null);
+  };
+
+  // guest portal: look up a booking by its code (TEST_CODE opens a sample)
+  const lookupCode = ()=>{
+    const code = codeInput.trim().toUpperCase();
+    if(!code) return;
+    if(code===TEST_CODE){
+      setPortalBk({code:TEST_CODE,guestName:"Test Guest",checkIn:fmt(new Date()),checkOut:fmt(addDays(new Date(),3)),totalPrice:"",_test:true});
+      setCodeErr("");setMsgSent(false);setMsgErr("");return;
+    }
+    const found = bookings.find(b=>(b.code||"").toUpperCase()===code);
+    if(found){ setPortalBk(found);setCodeErr("");setMsgSent(false);setMsgErr(""); }
+    else { setPortalBk(null);setCodeErr("No booking found for that code. Double-check and try again."); }
+  };
+  const closePortal = ()=>{ setPortalOpen(false);setCodeInput("");setPortalBk(null);setCodeErr("");setMsgText("");setMsgSent(false);setMsgErr(""); };
+  const sendMsg = async ()=>{
+    if(!msgText.trim()||!portalBk) return;
+    setMsgErr("");
+    try{
+      const r = await fetch("/api/message",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          code:portalBk.code, guestName:portalBk.guestName, guestEmail:portalBk.guestEmail||"",
+          checkIn:portalBk.checkIn, checkOut:portalBk.checkOut,
+          property:config.propertyName, message:msgText.trim(),
+        }),
+      });
+      if(!r.ok) throw new Error("send failed");
+      setMsgSent(true);setMsgText("");
+    }catch(e){ setMsgErr("Couldn't send right now. Please try again."); }
   };
 
   const doLogin = ()=>{
@@ -577,11 +672,55 @@ function App() {
           <div style={{whiteSpace:"pre-wrap",fontSize:15,lineHeight:1.7}}>{config.guestGuide}</div>
         </Modal>
 
+        <Modal open={portalOpen} onClose={closePortal} title="🔑 My Booking">
+          {!portalBk ? (
+            <div>
+              <p style={{fontSize:14,color:P.muted,margin:"0 0 16px"}}>Enter the booking code from your confirmation to view your check-in guide and message the host.</p>
+              <Inp label="Booking code" value={codeInput} onChange={v=>{setCodeInput(v);setCodeErr("");}} placeholder="TRA-XXXXX" sx={{textTransform:"uppercase",letterSpacing:1}} />
+              {codeErr && <p style={{color:P.accent,fontSize:13,margin:"-6px 0 12px"}}>{codeErr}</p>}
+              <Btn onClick={lookupCode} disabled={!codeInput.trim()} sx={{width:"100%"}}>View my booking</Btn>
+            </div>
+          ) : (
+            <div>
+              <div style={{background:P.surface,borderRadius:12,padding:16,marginBottom:18}}>
+                <div style={{fontSize:13,color:P.muted,marginBottom:4}}>Booking code</div>
+                <div style={{fontFamily:FD,fontSize:20,fontWeight:700,letterSpacing:1,marginBottom:10}}>{portalBk.code}</div>
+                <div style={{fontSize:14}}>{portalBk.guestName||"Guest"} · {fmtNice(portalBk.checkIn)} → {fmtNice(portalBk.checkOut)}</div>
+                <div style={{fontSize:13,color:P.muted,marginTop:4}}>Check-in {config.checkInTime||"TBD"} · Check-out {config.checkOutTime||"TBD"}</div>
+                {portalBk._test && <div style={{fontSize:12,color:P.accent,marginTop:8,fontWeight:600}}>● Test mode — sample booking</div>}
+              </div>
+
+              <div style={{marginBottom:18}}>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>🔑 Check-in guide</div>
+                {config.guestGuide
+                  ? <div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.7,background:P.card,border:`1px solid ${P.borderLt}`,borderRadius:12,padding:14}}>{config.guestGuide}</div>
+                  : <div style={{fontSize:14,color:P.muted}}>The host hasn't added a check-in guide yet.</div>}
+              </div>
+
+              <div>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>💬 Message the host</div>
+                {msgSent ? (
+                  <div style={{background:P.okLt,color:P.ok,borderRadius:12,padding:14,fontSize:14}}>✓ Message sent. The host will get back to you.</div>
+                ) : (
+                  <div>
+                    <Inp value={msgText} onChange={setMsgText} multi placeholder="Ask a question or send a note to your host…" />
+                    {msgErr && <p style={{color:P.accent,fontSize:13,margin:"-6px 0 10px"}}>{msgErr}</p>}
+                    <Btn onClick={sendMsg} v="gradient" disabled={!msgText.trim()} sx={{width:"100%"}}>Send message</Btn>
+                  </div>
+                )}
+              </div>
+
+              <Btn v="ghost" small onClick={()=>{setPortalBk(null);setCodeInput("");setMsgSent(false);}} sx={{width:"100%",marginTop:14}}>← Look up a different code</Btn>
+            </div>
+          )}
+        </Modal>
+
         {lbIndex!=null && <Lightbox photos={photos} index={lbIndex} setIndex={setLbIndex} onClose={()=>setLbIndex(null)} />}
 
         {/* footer */}
         <div style={{borderTop:`1px solid ${P.borderLt}`,marginTop:20}}>
           <div style={{maxWidth:1040,margin:"0 auto",padding:"24px",textAlign:"center"}}>
+            <Btn v="outline" small onClick={()=>setPortalOpen(true)} sx={{marginBottom:16}}>🔑 My Booking — enter your code</Btn>
             <div style={{display:"flex",justifyContent:"center",gap:14,alignItems:"center"}}>
               <button onClick={()=>{setLoginTarget("admin");setView("login");}} style={{background:"none",border:"none",fontFamily:F,fontSize:13,fontWeight:600,color:P.muted,cursor:"pointer",textDecoration:"underline"}}>Admin</button>
               <span style={{color:P.border}}>·</span>
@@ -725,6 +864,7 @@ function App() {
                   </div>
                 </div>
                 <div style={{fontSize:13,color:P.muted}}>{fmtNice(b.checkIn)} → {fmtNice(b.checkOut)} · {daysBetween(parseD(b.checkIn),parseD(b.checkOut))} nights {b.totalPrice?`· ${money(b.totalPrice)}`:""}</div>
+                {b.code && <div style={{fontSize:12,marginTop:6,fontWeight:600,letterSpacing:.5}}>🔑 Code: <span style={{fontFamily:FD,background:P.cleanLt,padding:"2px 8px",borderRadius:6}}>{b.code}</span> <span style={{color:P.faint,fontWeight:400}}>· share with guest</span></div>}
               </div>
             ))}
             <Modal open={bkOpen} onClose={()=>{setBkOpen(false);setEditId(null);}} title={editId?"Edit Booking":"New Booking"} wide>
