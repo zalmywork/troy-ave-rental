@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rental Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #FFFFFF; font-family: 'DM Sans', 'Helvetica Neue', sans-serif; color: #222222; -webkit-font-smoothing: antialiased; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes popIn { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+  input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #DDDDDD; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .gcell:hover { transform: scale(1.04); }
+  .photo-zoom { transition: transform .5s cubic-bezier(.2,.8,.2,1); }
+  .photo-tile:hover .photo-zoom { transform: scale(1.06); }
+  .photo-tile:hover .photo-dim { opacity: 1; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DAYS_HDR = ["S","M","T","W","T","F","S"];
+
+const defaultConfig = {
+  propertyName: "Your Rental Property",
+  address: "",
+  description: "",
+  photos: [],
+  checkInTime: "15:00",
+  checkOutTime: "11:00",
+  defaultNightlyRate: 0,
+  cleaningFee: 0,
+  depositAmount: 0,
+  guestGuide: "",
+  adminPin: "1234",
+  cleaningPin: "0000",
+};
+
+/* ── helpers ── */
+const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const parseD = (s) => { const [y,m,d] = s.split("-").map(Number); return new Date(y,m-1,d); };
+const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate()+n); return r; };
+const daysBetween = (a, b) => Math.round((b - a) / 86400000);
+const money = (n) => n != null && n !== "" ? `$${Number(n).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:0})}` : "";
+const fmtNice = (s) => { const d = parseD(s); return d.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"}); };
+const fmtShort = (s) => { const d = parseD(s); return d.toLocaleDateString("en-US",{month:"short",day:"numeric"}); };
+const nightPrice = (ds, pricing, config) => (pricing[ds]!=null && pricing[ds]!=="") ? Number(pricing[ds]) : (Number(config.defaultNightlyRate)||0);
+
+const gcalUrl = (title, start, end, loc, det) => {
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${start.replace(/-/g,"")}/${end.replace(/-/g,"")}&location=${encodeURIComponent(loc||"")}&details=${encodeURIComponent(det||"")}`;
+};
+
+/* ── localStorage persistence ── */
+function load(key, fallback) {
+  try { const v = localStorage.getItem("str_"+key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+}
+function save(key, val) {
+  try { localStorage.setItem("str_"+key, JSON.stringify(val)); } catch(e) { console.error(e); }
+}
+
+function useIsMobile(bp=820){
+  const [m,setM]=useState(typeof window!=="undefined" && window.innerWidth<bp);
+  useEffect(()=>{
+    const f=()=>setM(window.innerWidth<bp);
+    window.addEventListener("resize",f); return ()=>window.removeEventListener("resize",f);
+  },[bp]);
+  return m;
+}
+
+/* ── palette (Airbnb-inspired) ── */
+const P = {
+  bg:"#FFFFFF", card:"#FFFFFF", text:"#222222", muted:"#717171", faint:"#B0B0B0",
+  accent:"#FF385C", accentDk:"#E00B41", accentLt:"#FFF0F3",
+  border:"#DDDDDD", borderLt:"#EBEBEB",
+  reserved:"#B0B0B0", reservedLt:"#F4F4F4",
+  ok:"#008A05", okLt:"#E7F5E8",
+  surface:"#F7F7F7", overlay:"rgba(0,0,0,0.85)",
+  clean:"#222222", cleanLt:"#F2F2F2",
+};
+const F = "'DM Sans','Helvetica Neue',sans-serif";
+const FD = "'DM Sans','Helvetica Neue',sans-serif";
+
+/* ── Modal ── */
+function Modal({ open, onClose, title, children, wide }) {
+  if (!open) return null;
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.45)",animation:"fadeIn .15s ease"}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:P.card,borderRadius:16,padding:32,maxWidth:wide?720:480,width:"92%",maxHeight:"85vh",overflow:"auto",boxShadow:"0 24px 80px rgba(0,0,0,0.25)",animation:"popIn .18s ease"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+          <h3 style={{fontFamily:FD,fontSize:22,fontWeight:700,margin:0,color:P.text}}>{title}</h3>
+          <button onClick={onClose} style={{background:P.surface,border:"none",width:32,height:32,borderRadius:"50%",fontSize:18,cursor:"pointer",color:P.text}}>×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* ── Input ── */
+function Inp({ label, value, onChange, type="text", placeholder, multi, sx }) {
+  const base = {fontFamily:F,fontSize:15,padding:"12px 14px",border:`1px solid ${P.border}`,borderRadius:10,background:P.card,color:P.text,width:"100%",boxSizing:"border-box",outline:"none",transition:"border .2s, box-shadow .2s",...sx};
+  return (
+    <label style={{display:"block",marginBottom:14}}>
+      {label && <span style={{fontSize:13,fontWeight:600,color:P.text,display:"block",marginBottom:6,fontFamily:F}}>{label}</span>}
+      {multi
+        ? <textarea value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={4} style={{...base,resize:"vertical"}} onFocus={e=>{e.target.style.borderColor=P.text;e.target.style.boxShadow="0 0 0 1px "+P.text}} onBlur={e=>{e.target.style.borderColor=P.border;e.target.style.boxShadow="none"}} />
+        : <input type={type} value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={base} onFocus={e=>{e.target.style.borderColor=P.text;e.target.style.boxShadow="0 0 0 1px "+P.text}} onBlur={e=>{e.target.style.borderColor=P.border;e.target.style.boxShadow="none"}} />
+      }
+    </label>
+  );
+}
+
+/* ── Btn ── */
+function Btn({ children, onClick, v="primary", small, sx, disabled }) {
+  const map = {
+    primary:{background:P.accent,color:"#fff",border:"none"},
+    gradient:{background:"linear-gradient(to right, #E61E4D 0%, #E31C5F 50%, #D70466 100%)",color:"#fff",border:"none"},
+    dark:{background:P.text,color:"#fff",border:"none"},
+    secondary:{background:P.card,color:P.text,border:`1px solid ${P.text}`},
+    outline:{background:P.card,color:P.text,border:`1px solid ${P.border}`},
+    ghost:{background:"transparent",color:P.text,border:"none",textDecoration:"underline"},
+    danger:{background:"#D93900",color:"#fff",border:"none"},
+    clean:{background:P.clean,color:"#fff",border:"none"},
+  };
+  return <button disabled={disabled} onClick={onClick}
+    onMouseEnter={e=>{e.currentTarget.style.filter="brightness(.94)";e.currentTarget.style.transform="translateY(-1px)";}}
+    onMouseLeave={e=>{e.currentTarget.style.filter="none";e.currentTarget.style.transform="none";}}
+    style={{fontFamily:F,fontSize:small?14:15,fontWeight:600,padding:small?"8px 16px":"13px 24px",borderRadius:10,cursor:disabled?"not-allowed":"pointer",opacity:disabled?.5:1,transition:"all .18s ease",...map[v],...sx}}>{children}</button>;
+}
+
+/* ── Photo Gallery (Airbnb hero grid) ── */
+function tileStyle(src){
+  return {position:"relative",overflow:"hidden",cursor:"pointer",background:`#eee url(${src}) center/cover`,backgroundClip:"padding-box"};
+}
+function Tile({src,idx,onOpen,big}){
+  return (
+    <div className="photo-tile" onClick={()=>onOpen(idx)} style={{position:"relative",overflow:"hidden",cursor:"pointer",background:"#eee"}}>
+      <div className="photo-zoom" style={{position:"absolute",inset:0,background:`url(${src}) center/cover`}} />
+      <div className="photo-dim" style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.06)",opacity:0,transition:"opacity .3s"}} />
+    </div>
+  );
+}
+function Gallery({photos,onOpen,isMobile}){
+  const n = photos.length;
+  if(n===0) return (
+    <div style={{height:isMobile?240:380,borderRadius:isMobile?0:18,background:P.surface,display:"flex",alignItems:"center",justifyContent:"center",color:P.faint,fontSize:15}}>
+      No photos yet — add them in the admin dashboard
+    </div>
+  );
+  const radius = isMobile?0:18;
+  const H = isMobile?280:460;
+  const wrap = {display:"grid",gap:8,height:H,borderRadius:radius,overflow:"hidden",position:"relative"};
+
+  let grid;
+  if(n===1){
+    grid = <div style={{...wrap,gridTemplateColumns:"1fr"}}><Tile src={photos[0]} idx={0} onOpen={onOpen} /></div>;
+  } else if(n===2){
+    grid = <div style={{...wrap,gridTemplateColumns:"1fr 1fr"}}>{photos.slice(0,2).map((p,i)=><Tile key={i} src={p} idx={i} onOpen={onOpen}/>)}</div>;
+  } else if(n===3){
+    grid = <div style={{...wrap,gridTemplateColumns:"1.6fr 1fr",gridTemplateRows:"1fr 1fr"}}>
+      <div style={{gridRow:"1 / 3"}}><Tile src={photos[0]} idx={0} onOpen={onOpen}/></div>
+      <Tile src={photos[1]} idx={1} onOpen={onOpen}/>
+      <Tile src={photos[2]} idx={2} onOpen={onOpen}/>
+    </div>;
+  } else {
+    const five = photos.slice(0,5);
+    grid = <div style={{...wrap,gridTemplateColumns:"2fr 1fr 1fr",gridTemplateRows:"1fr 1fr"}}>
+      <div style={{gridRow:"1 / 3"}}><Tile src={five[0]} idx={0} onOpen={onOpen}/></div>
+      <Tile src={five[1]} idx={1} onOpen={onOpen}/>
+      <Tile src={five[2]} idx={2} onOpen={onOpen}/>
+      <Tile src={five[3]} idx={3} onOpen={onOpen}/>
+      {five[4] && <Tile src={five[4]} idx={4} onOpen={onOpen}/>}
+    </div>;
+  }
+  return (
+    <div style={{position:"relative"}}>
+      {grid}
+      {n>1 && (
+        <button onClick={()=>onOpen(0)} style={{position:"absolute",bottom:16,right:16,background:"#fff",border:`1px solid ${P.text}`,borderRadius:8,padding:"7px 14px",fontFamily:F,fontSize:13,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:7,boxShadow:"0 1px 6px rgba(0,0,0,.12)"}}>
+          <span style={{display:"inline-grid",gridTemplateColumns:"1fr 1fr",gap:2}}>
+            <span style={{width:5,height:5,background:P.text,borderRadius:1}}/><span style={{width:5,height:5,background:P.text,borderRadius:1}}/>
+            <span style={{width:5,height:5,background:P.text,borderRadius:1}}/><span style={{width:5,height:5,background:P.text,borderRadius:1}}/>
+          </span>
+          Show all photos{n>5?` (${n})`:""}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ── Lightbox ── */
+function Lightbox({photos,index,setIndex,onClose}){
+  const prev = useCallback(()=>setIndex(i=>(i-1+photos.length)%photos.length),[photos.length,setIndex]);
+  const next = useCallback(()=>setIndex(i=>(i+1)%photos.length),[photos.length,setIndex]);
+  useEffect(()=>{
+    const f=(e)=>{ if(e.key==="Escape")onClose(); if(e.key==="ArrowLeft")prev(); if(e.key==="ArrowRight")next(); };
+    window.addEventListener("keydown",f); return ()=>window.removeEventListener("keydown",f);
+  },[prev,next,onClose]);
+  if(index==null) return null;
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:2000,background:P.overlay,display:"flex",flexDirection:"column",animation:"fadeIn .2s ease"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"18px 22px",color:"#fff"}}>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"#fff",fontSize:30,cursor:"pointer",lineHeight:1}}>×</button>
+        <span style={{fontFamily:F,fontSize:15,fontWeight:500}}>{index+1} / {photos.length}</span>
+        <span style={{width:24}}/>
+      </div>
+      <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 14px 24px",position:"relative",minHeight:0}}>
+        {photos.length>1 && <button onClick={prev} style={{position:"absolute",left:18,background:"#fff",border:"none",width:44,height:44,borderRadius:"50%",fontSize:20,cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,.3)"}}>‹</button>}
+        <img src={photos[index]} alt="" style={{maxWidth:"92vw",maxHeight:"78vh",objectFit:"contain",borderRadius:8,boxShadow:"0 10px 50px rgba(0,0,0,.5)"}} />
+        {photos.length>1 && <button onClick={next} style={{position:"absolute",right:18,background:"#fff",border:"none",width:44,height:44,borderRadius:"50%",fontSize:20,cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,.3)"}}>›</button>}
+      </div>
+      {photos.length>1 && (
+        <div style={{display:"flex",gap:8,justifyContent:"center",padding:"0 14px 22px",overflowX:"auto"}}>
+          {photos.map((p,i)=>(
+            <div key={i} onClick={()=>setIndex(i)} style={{width:64,height:48,flexShrink:0,borderRadius:6,background:`url(${p}) center/cover`,cursor:"pointer",outline:i===index?"2px solid #fff":"2px solid transparent",opacity:i===index?1:.55,transition:"opacity .2s"}}/>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Calendar ── */
+function Cal({ month, year, bookings, pricing, config, onDateClick, selStart, selEnd, mode }) {
+  const firstDay = new Date(year, month, 1).getDay();
+  const dim = new Date(year, month+1, 0).getDate();
+  const today = fmt(new Date());
+  const cells = [];
+  for (let i=0;i<firstDay;i++) cells.push(null);
+  for (let d=1;d<=dim;d++) cells.push(d);
+
+  return (
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:6}}>
+        {DAYS_HDR.map((d,i)=><div key={i} style={{textAlign:"center",fontSize:12,fontWeight:600,color:P.muted,padding:"2px 0",fontFamily:F}}>{d}</div>)}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+        {cells.map((day,i)=>{
+          if(!day) return <div key={"e"+i}/>;
+          const ds = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+          const booked = bookings.some(b=>ds>=b.checkIn && ds<b.checkOut);
+          const price = nightPrice(ds, pricing, config);
+          const isSel = selStart && selEnd && ds>=selStart && ds<=selEnd;
+          const isStart = ds===selStart;
+          const isEnd = ds===selEnd;
+          const past = ds<today;
+          const isToday = ds===today;
+          const disabled = past || (booked && mode==="guest");
+
+          let bg="transparent",color=P.text,fw=500,deco="none",radius=10,border="1.5px solid transparent";
+          if(past){ color=P.faint; deco= mode==="guest"?"line-through":"none"; }
+          else if(booked){ color=P.faint; deco= mode==="guest"?"line-through":"none"; bg= mode==="guest"?"transparent":P.reservedLt; if(mode!=="guest"){color=P.reserved;fw=600;} }
+          if(isSel){ bg=P.accentLt; color=P.accent; fw=700; }
+          if(isStart||isEnd){ bg=P.text; color="#fff"; fw=700; }
+          if(isToday && !isStart && !isEnd){ border=`1.5px solid ${P.text}`; }
+
+          return (
+            <div key={ds} className={!disabled?"gcell":""} onClick={()=>!disabled&&onDateClick(ds)} style={{textAlign:"center",borderRadius:radius,background:bg,color,border,cursor:disabled?"default":"pointer",transition:"transform .12s ease, background .12s",minHeight:mode==="guest"?52:42,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontWeight:fw,position:"relative"}}>
+              <span style={{fontSize:14,lineHeight:1.1,textDecoration:deco}}>{day}</span>
+              {!disabled && !booked && price>0 && mode==="guest" && <span style={{fontSize:10,color:isStart||isEnd?"rgba(255,255,255,.85)":P.muted,fontWeight:500,marginTop:3}}>${price}</span>}
+              {booked && mode!=="guest" && <span style={{fontSize:8,color:P.reserved,marginTop:1}}>●</span>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════ */
+/*            MAIN APP                       */
+/* ═══════════════════════════════════════ */
+function App() {
+  const isMobile = useIsMobile();
+  const [view, setView] = useState("guest");
+  const [loginTarget, setLoginTarget] = useState("admin");
+  const [pin, setPin] = useState("");
+  const [pinErr, setPinErr] = useState("");
+
+  const [config, setConfig] = useState(()=>({...defaultConfig,...load("config",{})}));
+  const [bookings, setBookings] = useState(()=>load("bookings",[]));
+  const [pricing, setPricing] = useState(()=>load("pricing",{}));
+  const [requests, setRequests] = useState(()=>load("requests",[]));
+
+  const [mo, setMo] = useState(new Date().getMonth());
+  const [yr, setYr] = useState(new Date().getFullYear());
+
+  // guest
+  const [selA, setSelA] = useState(null);
+  const [selB, setSelB] = useState(null);
+  const [bkModal, setBkModal] = useState(false);
+  const [gName, setGName] = useState("");
+  const [gEmail, setGEmail] = useState("");
+  const [gPhone, setGPhone] = useState("");
+  const [gNotes, setGNotes] = useState("");
+  const [sent, setSent] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [lbIndex, setLbIndex] = useState(null);
+
+  // admin
+  const [aTab, setATab] = useState("property");
+  const [editId, setEditId] = useState(null);
+  const [bkOpen, setBkOpen] = useState(false);
+  const [bf, setBf] = useState({guestName:"",guestEmail:"",guestPhone:"",checkIn:"",checkOut:"",totalPrice:"",depositPaid:false,depositAmount:"",notes:"",status:"confirmed"});
+  const [ps, setPs] = useState("");
+  const [pe, setPe] = useState("");
+  const [pa, setPa] = useState("");
+  const [photoUrl, setPhotoUrl] = useState("");
+
+  // save wrappers
+  const sConfig = (c)=>{setConfig(c);save("config",c);};
+  const sBookings = (b)=>{setBookings(b);save("bookings",b);};
+  const sPricing = (p)=>{setPricing(p);save("pricing",p);};
+  const sRequests = (r)=>{setRequests(r);save("requests",r);};
+
+  const prevMo = ()=>{if(mo===0){setMo(11);setYr(y=>y-1);}else setMo(m=>m-1);};
+  const nextMo = ()=>{if(mo===11){setMo(0);setYr(y=>y+1);}else setMo(m=>m+1);};
+
+  // guest date pick
+  const guestClick = (ds)=>{
+    if(bookings.some(b=>ds>=b.checkIn&&ds<b.checkOut)) return;
+    if(!selA||(selA&&selB)){setSelA(ds);setSelB(null);}
+    else if(ds>selA){
+      if(bookings.some(b=>selA<b.checkOut&&ds>b.checkIn)){setSelA(ds);setSelB(null);}
+      else setSelB(ds);
+    } else {setSelA(ds);setSelB(null);}
+  };
+
+  const nights = selA&&selB?daysBetween(parseD(selA),parseD(selB)):0;
+  const nightsSubtotal = useMemo(()=>{
+    if(!selA||!selB) return 0;
+    let t=0,d=parseD(selA);const end=parseD(selB);
+    while(d<end){ t+=nightPrice(fmt(d),pricing,config); d=addDays(d,1); }
+    return t;
+  },[selA,selB,pricing,config]);
+  const total = nightsSubtotal + (Number(config.cleaningFee)||0);
+  const avgNight = nights>0 ? Math.round(nightsSubtotal/nights) : (Number(config.defaultNightlyRate)||0);
+
+  // admin booking
+  const openNew = ()=>{setBf({guestName:"",guestEmail:"",guestPhone:"",checkIn:"",checkOut:"",totalPrice:"",depositPaid:false,depositAmount:"",notes:"",status:"confirmed"});setBkOpen(true);setEditId(null);};
+  const openEdit = (b)=>{setBf({...b});setEditId(b.id);setBkOpen(true);};
+  const saveBk = ()=>{
+    if(!bf.checkIn||!bf.checkOut) return;
+    const updated = editId ? bookings.map(b=>b.id===editId?{...bf,id:editId}:b) : [...bookings,{...bf,id:Date.now().toString()}];
+    sBookings(updated);setBkOpen(false);setEditId(null);
+  };
+  const delBk = (id)=>{sBookings(bookings.filter(b=>b.id!==id));setBkOpen(false);setEditId(null);};
+
+  const applyPrice = ()=>{
+    if(!ps||!pe||!pa) return;
+    const p={...pricing};let d=parseD(ps);const end=parseD(pe);
+    while(d<=end){p[fmt(d)]=Number(pa);d=addDays(d,1);}
+    sPricing(p);setPs("");setPe("");setPa("");
+  };
+
+  const acceptReq = (req)=>{
+    sBookings([...bookings,{id:Date.now().toString(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed"}]);
+    sRequests(requests.filter(r=>r.id!==req.id));
+  };
+
+  const submitReq = ()=>{
+    if(!gName||!selA||!selB) return;
+    sRequests([...requests,{id:Date.now().toString(),guestName:gName,guestEmail:gEmail,guestPhone:gPhone,checkIn:selA,checkOut:selB,totalPrice:total,notes:gNotes,createdAt:new Date().toISOString()}]);
+    setSent(true);setGName("");setGEmail("");setGPhone("");setGNotes("");setSelA(null);setSelB(null);
+  };
+
+  const doLogin = ()=>{
+    const ok = loginTarget==="admin"?(config.adminPin||"1234"):(config.cleaningPin||"0000");
+    if(pin===ok){setView(loginTarget);setPin("");setPinErr("");}else setPinErr("Incorrect PIN");
+  };
+
+  const addPhoto = ()=>{if(!photoUrl)return;sConfig({...config,photos:[...(config.photos||[]),photoUrl]});setPhotoUrl("");};
+  const rmPhoto = (i)=>{sConfig({...config,photos:config.photos.filter((_,j)=>j!==i)});};
+
+  /* ─── LOGIN ─── */
+  if(view==="login") return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:P.bg}}>
+      <div style={{background:P.card,borderRadius:16,padding:40,width:340,boxShadow:"0 6px 40px rgba(0,0,0,0.1)",border:`1px solid ${P.borderLt}`,textAlign:"center"}}>
+        <div style={{width:48,height:48,background:loginTarget==="admin"?P.accent:P.clean,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px",fontSize:22,color:"#fff"}}>{loginTarget==="admin"?"⚙":"🧹"}</div>
+        <h2 style={{fontFamily:FD,fontSize:22,fontWeight:700,margin:"0 0 6px"}}>{loginTarget==="admin"?"Admin":"Cleaning"} Login</h2>
+        <p style={{fontSize:14,color:P.muted,margin:"0 0 24px"}}>Enter your PIN to continue</p>
+        <Inp value={pin} onChange={v=>{setPin(v);setPinErr("");}} type="password" placeholder="Enter PIN" />
+        {pinErr && <p style={{color:P.accent,fontSize:13,margin:"-8px 0 12px"}}>{pinErr}</p>}
+        <Btn onClick={doLogin} sx={{width:"100%",marginBottom:10}} v={loginTarget==="admin"?"primary":"clean"}>{loginTarget==="admin"?"Enter Admin":"Enter Cleaning"}</Btn>
+        <Btn onClick={()=>{setView("guest");setPin("");setPinErr("");}} v="ghost">← Back to site</Btn>
+      </div>
+    </div>
+  );
+
+  /* ─── GUEST ─── */
+  if(view==="guest"){
+    const photos = config.photos||[];
+    const reservationCard = (
+      <div style={{background:P.card,borderRadius:16,padding:24,boxShadow:"0 6px 24px rgba(0,0,0,0.10)",border:`1px solid ${P.borderLt}`}}>
+        {!selA || !selB ? (
+          <div>
+            <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:4}}>
+              {avgNight>0 ? <><span style={{fontSize:22,fontWeight:700}}>{money(avgNight)}</span><span style={{fontSize:15,color:P.muted}}>/ night</span></>
+              : <span style={{fontSize:18,fontWeight:700}}>Select dates for pricing</span>}
+            </div>
+            <p style={{fontSize:14,color:P.muted,marginTop:10}}>Tap dates on the calendar to see your total and request a booking.</p>
+          </div>
+        ) : (
+          <div>
+            <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:16}}>
+              <span style={{fontSize:22,fontWeight:700}}>{money(total)}</span>
+              <span style={{fontSize:15,color:P.muted}}>total</span>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",border:`1px solid ${P.border}`,borderRadius:10,overflow:"hidden",marginBottom:14}}>
+              <div style={{padding:"10px 12px",borderRight:`1px solid ${P.border}`}}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:.4,textTransform:"uppercase"}}>Check-in</div>
+                <div style={{fontSize:14,marginTop:2}}>{fmtShort(selA)}</div>
+              </div>
+              <div style={{padding:"10px 12px"}}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:.4,textTransform:"uppercase"}}>Checkout</div>
+                <div style={{fontSize:14,marginTop:2}}>{fmtShort(selB)}</div>
+              </div>
+            </div>
+            <Btn onClick={()=>setBkModal(true)} v="gradient" sx={{width:"100%",marginBottom:14}}>Request Booking</Btn>
+            <div style={{fontSize:14,color:P.text}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{textDecoration:"underline",color:P.muted}}>{money(avgNight)} × {nights} night{nights!==1?"s":""}</span>
+                <span>{money(nightsSubtotal)}</span>
+              </div>
+              {config.cleaningFee>0 && <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{textDecoration:"underline",color:P.muted}}>Cleaning fee</span>
+                <span>{money(config.cleaningFee)}</span>
+              </div>}
+              {config.depositAmount>0 && <div style={{display:"flex",justifyContent:"space-between",marginBottom:8,color:P.muted}}>
+                <span style={{textDecoration:"underline"}}>Deposit (refundable)</span>
+                <span>{money(config.depositAmount)}</span>
+              </div>}
+              <div style={{display:"flex",justifyContent:"space-between",borderTop:`1px solid ${P.border}`,paddingTop:12,marginTop:4,fontWeight:700,fontSize:15}}>
+                <span>Total</span><span>{money(total)}</span>
+              </div>
+            </div>
+            <a href={gcalUrl(`Stay at ${config.propertyName}`,selA,selB,config.address,`Check-in: ${config.checkInTime}\nCheck-out: ${config.checkOutTime}`)} target="_blank" rel="noreferrer" style={{textDecoration:"none",display:"block",marginTop:12}}>
+              <Btn v="outline" small sx={{width:"100%"}}>+ Add to Google Calendar</Btn>
+            </a>
+          </div>
+        )}
+      </div>
+    );
+
+    return (
+      <div style={{minHeight:"100vh",background:P.bg}}>
+        {/* top bar */}
+        <div style={{borderBottom:`1px solid ${P.borderLt}`,position:"sticky",top:0,background:"rgba(255,255,255,.92)",backdropFilter:"blur(8px)",zIndex:50}}>
+          <div style={{maxWidth:1040,margin:"0 auto",padding:"14px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,color:P.accent,fontWeight:800,fontSize:20,letterSpacing:-.5}}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill={P.accent}><path d="M12 1.5c-1.7 0-3 1.3-3 3 0 .9.7 2.5 1.6 4.2C8.1 9.4 6 11.3 6 14c0 2.2 1.8 4 4 4 .8 0 1.5-.2 2-.6.5.4 1.2.6 2 .6 2.2 0 4-1.8 4-4 0-2.7-2.1-4.6-4.6-5.3C14.3 7 15 5.4 15 4.5c0-1.7-1.3-3-3-3z"/></svg>
+              <span style={{color:P.text}}>{isMobile?"Stays":config.propertyName!=="Your Rental Property"?"":"Stays"}</span>
+            </div>
+            <span style={{fontSize:13,color:P.muted}}>Vacation Rental</span>
+          </div>
+        </div>
+
+        {/* gallery */}
+        <div style={{maxWidth:1040,margin:"0 auto",padding:isMobile?"0 0 4px":"24px 24px 4px"}}>
+          {!isMobile && (
+            <div style={{marginBottom:16}}>
+              <h1 style={{fontFamily:FD,fontSize:30,fontWeight:700,lineHeight:1.2,letterSpacing:-.5}}>{config.propertyName||"Your Rental Property"}</h1>
+              {config.address && <p style={{fontSize:15,color:P.text,marginTop:6,textDecoration:"underline",fontWeight:500}}>{config.address}</p>}
+            </div>
+          )}
+          <Gallery photos={photos} onOpen={(i)=>setLbIndex(i)} isMobile={isMobile} />
+        </div>
+
+        <div style={{maxWidth:1040,margin:"0 auto",padding:"20px 24px 40px",display:"flex",gap:48,alignItems:"flex-start",flexDirection:isMobile?"column":"row"}}>
+          {/* LEFT */}
+          <div style={{flex:1,minWidth:0,width:isMobile?"100%":"auto"}}>
+            {isMobile && (
+              <div style={{marginBottom:18,paddingBottom:18,borderBottom:`1px solid ${P.borderLt}`}}>
+                <h1 style={{fontFamily:FD,fontSize:24,fontWeight:700,lineHeight:1.25}}>{config.propertyName||"Your Rental Property"}</h1>
+                {config.address && <p style={{fontSize:14,color:P.text,marginTop:6,textDecoration:"underline"}}>{config.address}</p>}
+              </div>
+            )}
+
+            {config.description && <p style={{fontSize:16,lineHeight:1.7,color:P.text,marginBottom:24,paddingBottom:24,borderBottom:`1px solid ${P.borderLt}`,whiteSpace:"pre-wrap"}}>{config.description}</p>}
+
+            {/* check in/out */}
+            {(config.checkInTime||config.checkOutTime) && (
+              <div style={{display:"flex",gap:14,marginBottom:24,paddingBottom:24,borderBottom:`1px solid ${P.borderLt}`}}>
+                {config.checkInTime && <div style={{flex:1,border:`1px solid ${P.border}`,borderRadius:12,padding:"14px 16px"}}>
+                  <div style={{fontSize:13,color:P.muted,marginBottom:4}}>Check-in</div>
+                  <div style={{fontSize:18,fontWeight:700}}>{config.checkInTime}</div>
+                </div>}
+                {config.checkOutTime && <div style={{flex:1,border:`1px solid ${P.border}`,borderRadius:12,padding:"14px 16px"}}>
+                  <div style={{fontSize:13,color:P.muted,marginBottom:4}}>Checkout</div>
+                  <div style={{fontSize:18,fontWeight:700}}>{config.checkOutTime}</div>
+                </div>}
+              </div>
+            )}
+
+            {/* calendar */}
+            <div>
+              <h2 style={{fontFamily:FD,fontSize:22,fontWeight:700,margin:"0 0 4px"}}>{nights>0?`${nights} night${nights!==1?"s":""}`:"Choose your dates"}</h2>
+              <p style={{fontSize:14,color:P.muted,margin:"0 0 18px"}}>{selA&&selB?`${fmtNice(selA)} – ${fmtNice(selB)}`:"Prices shown are per night. Tap a start and end date."}</p>
+              <div style={{border:`1px solid ${P.borderLt}`,borderRadius:16,padding:isMobile?16:24}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+                  <button onClick={prevMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:36,height:36,cursor:"pointer",fontSize:16}}>‹</button>
+                  <h3 style={{fontFamily:FD,fontSize:18,fontWeight:700,margin:0}}>{MONTHS[mo]} {yr}</h3>
+                  <button onClick={nextMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:36,height:36,cursor:"pointer",fontSize:16}}>›</button>
+                </div>
+                <Cal month={mo} year={yr} bookings={bookings} pricing={pricing} config={config} onDateClick={guestClick} selStart={selA} selEnd={selB} mode="guest" />
+                <div style={{display:"flex",gap:18,marginTop:16,paddingTop:14,borderTop:`1px solid ${P.borderLt}`,fontSize:12,color:P.muted}}>
+                  <span style={{display:"flex",alignItems:"center",gap:6}}><span style={{width:14,height:14,borderRadius:5,background:P.text}}/>Selected</span>
+                  <span style={{display:"flex",alignItems:"center",gap:6}}><span style={{textDecoration:"line-through",color:P.faint}}>00</span>Unavailable</span>
+                </div>
+                {selA && <button onClick={()=>{setSelA(null);setSelB(null);}} style={{marginTop:14,background:"none",border:"none",textDecoration:"underline",fontFamily:F,fontSize:14,fontWeight:600,cursor:"pointer",color:P.text}}>Clear dates</button>}
+              </div>
+            </div>
+
+            {config.guestGuide && <div style={{marginTop:24}}><Btn onClick={()=>setGuideOpen(true)} v="outline" sx={{width:"100%"}}>🔑 View Guest Entrance Guide</Btn></div>}
+          </div>
+
+          {/* RIGHT — reservation card */}
+          {!isMobile && (
+            <div style={{width:360,flexShrink:0,position:"sticky",top:88}}>
+              {reservationCard}
+            </div>
+          )}
+        </div>
+
+        {/* mobile sticky bottom bar */}
+        {isMobile && (
+          <div style={{position:"sticky",bottom:0,background:"#fff",borderTop:`1px solid ${P.border}`,padding:"12px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,zIndex:60,boxShadow:"0 -4px 20px rgba(0,0,0,.06)"}}>
+            <div>
+              {selA&&selB
+                ? <><div style={{fontSize:17,fontWeight:700}}>{money(total)} <span style={{fontSize:13,fontWeight:400,color:P.muted}}>total</span></div><div style={{fontSize:12,color:P.muted,textDecoration:"underline"}}>{fmtShort(selA)} – {fmtShort(selB)}</div></>
+                : avgNight>0 ? <><div style={{fontSize:17,fontWeight:700}}>{money(avgNight)} <span style={{fontSize:13,fontWeight:400,color:P.muted}}>/ night</span></div><div style={{fontSize:12,color:P.muted}}>Add dates</div></>
+                : <div style={{fontSize:15,fontWeight:600}}>Select dates</div>}
+            </div>
+            <Btn v="gradient" disabled={!selA||!selB} onClick={()=>setBkModal(true)} sx={{whiteSpace:"nowrap"}}>{selA&&selB?"Request":"Select dates"}</Btn>
+          </div>
+        )}
+
+        {/* booking modal */}
+        <Modal open={bkModal} onClose={()=>{setBkModal(false);setSent(false);}} title={sent?"Request sent!":"Request a booking"}>
+          {sent ? (
+            <div style={{textAlign:"center",padding:"20px 0"}}>
+              <div style={{width:64,height:64,borderRadius:"50%",background:P.okLt,color:P.ok,fontSize:34,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 16px"}}>✓</div>
+              <p style={{fontSize:15,lineHeight:1.6,color:P.muted}}>Your booking request has been submitted. The host will review it and get back to you soon.</p>
+              <Btn onClick={()=>{setBkModal(false);setSent(false);}} sx={{marginTop:20}}>Close</Btn>
+            </div>
+          ) : (
+            <div>
+              <div style={{background:P.surface,borderRadius:12,padding:16,marginBottom:20}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:6}}><span style={{color:P.muted}}>Dates</span><span style={{fontWeight:600}}>{selA&&fmtShort(selA)} – {selB&&fmtShort(selB)}</span></div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:6}}><span style={{color:P.muted}}>{money(avgNight)} × {nights} nights</span><span>{money(nightsSubtotal)}</span></div>
+                {config.cleaningFee>0 && <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:6}}><span style={{color:P.muted}}>Cleaning fee</span><span>{money(config.cleaningFee)}</span></div>}
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:700,borderTop:`1px solid ${P.border}`,paddingTop:8,marginTop:4}}><span>Total</span><span>{money(total)}</span></div>
+              </div>
+              <Inp label="Full Name *" value={gName} onChange={setGName} placeholder="Jane Smith" />
+              <Inp label="Email" value={gEmail} onChange={setGEmail} type="email" placeholder="jane@email.com" />
+              <Inp label="Phone" value={gPhone} onChange={setGPhone} type="tel" placeholder="+1 (555) 000-0000" />
+              <Inp label="Notes" value={gNotes} onChange={setGNotes} multi placeholder="Any questions or special requests?" />
+              <Btn onClick={submitReq} v="gradient" disabled={!gName} sx={{width:"100%",marginTop:6}}>Submit Request</Btn>
+            </div>
+          )}
+        </Modal>
+
+        <Modal open={guideOpen} onClose={()=>setGuideOpen(false)} title="🔑 Guest Entrance Guide">
+          <div style={{whiteSpace:"pre-wrap",fontSize:15,lineHeight:1.7}}>{config.guestGuide}</div>
+        </Modal>
+
+        {lbIndex!=null && <Lightbox photos={photos} index={lbIndex} setIndex={setLbIndex} onClose={()=>setLbIndex(null)} />}
+
+        {/* footer */}
+        <div style={{borderTop:`1px solid ${P.borderLt}`,marginTop:20}}>
+          <div style={{maxWidth:1040,margin:"0 auto",padding:"24px",textAlign:"center"}}>
+            <div style={{display:"flex",justifyContent:"center",gap:14,alignItems:"center"}}>
+              <button onClick={()=>{setLoginTarget("admin");setView("login");}} style={{background:"none",border:"none",fontFamily:F,fontSize:13,fontWeight:600,color:P.muted,cursor:"pointer",textDecoration:"underline"}}>Admin</button>
+              <span style={{color:P.border}}>·</span>
+              <button onClick={()=>{setLoginTarget("cleaning");setView("login");}} style={{background:"none",border:"none",fontFamily:F,fontSize:13,fontWeight:600,color:P.muted,cursor:"pointer",textDecoration:"underline"}}>Cleaning</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ─── CLEANING ─── */
+  if(view==="cleaning"){
+    const upcoming = [...bookings].filter(b=>b.checkOut>=fmt(new Date())).sort((a,b)=>a.checkIn.localeCompare(b.checkIn));
+    return (
+      <div style={{minHeight:"100vh",background:P.bg}}>
+        <div style={{background:P.clean,padding:"24px 20px",color:"#fff"}}>
+          <div style={{maxWidth:700,margin:"0 auto",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <h1 style={{fontFamily:FD,fontSize:24,fontWeight:700,margin:0}}>Cleaning Schedule</h1>
+              <p style={{fontSize:13,opacity:.8,margin:"4px 0 0"}}>{config.propertyName} {config.address&&`· ${config.address}`}</p>
+            </div>
+            <Btn v="outline" small onClick={()=>setView("guest")} sx={{background:"#fff"}}>← Exit</Btn>
+          </div>
+        </div>
+        <div style={{maxWidth:700,margin:"0 auto",padding:20}}>
+          <div style={{background:P.card,borderRadius:16,padding:24,border:`1px solid ${P.borderLt}`,marginBottom:20}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <button onClick={prevMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:36,height:36,cursor:"pointer",fontSize:16}}>‹</button>
+              <h3 style={{fontFamily:FD,fontSize:18,fontWeight:700,margin:0}}>{MONTHS[mo]} {yr}</h3>
+              <button onClick={nextMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:36,height:36,cursor:"pointer",fontSize:16}}>›</button>
+            </div>
+            <Cal month={mo} year={yr} bookings={bookings} pricing={pricing} config={config} onDateClick={()=>{}} selStart={null} selEnd={null} mode="cleaning" />
+          </div>
+
+          <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 14px"}}>Upcoming Turnovers</h3>
+          {upcoming.length===0 && <p style={{color:P.muted,fontSize:14}}>No upcoming bookings.</p>}
+          {upcoming.map(b=>(
+            <div key={b.id} style={{background:P.card,borderRadius:14,padding:20,marginBottom:12,border:`1px solid ${P.borderLt}`,boxShadow:"0 1px 4px rgba(0,0,0,0.03)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                <span style={{fontSize:13,fontWeight:600,color:P.text,background:P.cleanLt,padding:"4px 10px",borderRadius:8}}>{b.guestName||"Guest"}</span>
+                <span style={{fontSize:12,color:P.muted}}>{daysBetween(parseD(b.checkIn),parseD(b.checkOut))} nights</span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,fontSize:13}}>
+                <div><span style={{color:P.muted,display:"block",fontSize:11,fontWeight:600,marginBottom:2}}>CHECK-IN</span><span style={{fontWeight:600}}>{fmtNice(b.checkIn)}</span><span style={{color:P.muted,display:"block",fontSize:12}}>at {config.checkInTime||"TBD"}</span></div>
+                <div><span style={{color:P.muted,display:"block",fontSize:11,fontWeight:600,marginBottom:2}}>CHECK-OUT</span><span style={{fontWeight:600}}>{fmtNice(b.checkOut)}</span><span style={{color:P.muted,display:"block",fontSize:12}}>at {config.checkOutTime||"TBD"}</span></div>
+              </div>
+              <div style={{marginTop:12}}>
+                <a href={gcalUrl(`🧹 Clean: ${config.propertyName}`,b.checkOut,fmt(addDays(parseD(b.checkOut),1)),config.address,`Guest "${b.guestName}" checks out at ${config.checkOutTime}. Prepare for next check-in.`)} target="_blank" rel="noreferrer" style={{textDecoration:"none"}}>
+                  <Btn v="outline" small>+ Add Cleaning to Google Cal</Btn>
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  /* ─── ADMIN ─── */
+  const tabs = [
+    {id:"property",label:"Property",icon:"🏠"},
+    {id:"calendar",label:"Calendar",icon:"📅"},
+    {id:"bookings",label:"Bookings",icon:"📋"},
+    {id:"pricing",label:"Pricing",icon:"💲"},
+    {id:"requests",label:`Requests${requests.length?` (${requests.length})`:""}`,icon:"📩"},
+    {id:"guide",label:"Guide",icon:"🔑"},
+    {id:"settings",label:"Settings",icon:"⚙"},
+  ];
+
+  return (
+    <div style={{minHeight:"100vh",background:P.bg}}>
+      <div style={{background:P.accent,padding:20}}>
+        <div style={{maxWidth:840,margin:"0 auto",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div><h1 style={{fontFamily:FD,fontSize:22,fontWeight:700,margin:0,color:"#fff"}}>Admin Dashboard</h1><p style={{fontSize:12,color:"rgba(255,255,255,.85)",margin:"4px 0 0"}}>{config.propertyName}</p></div>
+          <Btn v="outline" small onClick={()=>setView("guest")} sx={{background:"#fff"}}>← View Site</Btn>
+        </div>
+      </div>
+
+      <div style={{background:P.card,borderBottom:`1px solid ${P.borderLt}`,overflowX:"auto"}}>
+        <div style={{maxWidth:840,margin:"0 auto",display:"flex"}}>
+          {tabs.map(t=>(
+            <button key={t.id} onClick={()=>setATab(t.id)} style={{fontFamily:F,fontSize:13,fontWeight:aTab===t.id?700:500,padding:"14px 16px",border:"none",borderBottom:aTab===t.id?`2px solid ${P.text}`:"2px solid transparent",background:"none",color:aTab===t.id?P.text:P.muted,cursor:"pointer",whiteSpace:"nowrap"}}>{t.icon} {t.label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{maxWidth:840,margin:"0 auto",padding:"24px 20px"}}>
+        {aTab==="property" && (
+          <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
+            <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 20px"}}>Property Details</h3>
+            <Inp label="Property Name" value={config.propertyName} onChange={v=>sConfig({...config,propertyName:v})} placeholder="My Beautiful Rental" />
+            <Inp label="Address" value={config.address} onChange={v=>sConfig({...config,address:v})} placeholder="123 Troy Ave, Brooklyn, NY" />
+            <Inp label="Description" value={config.description} onChange={v=>sConfig({...config,description:v})} multi placeholder="Describe your property..." />
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+              <Inp label="Check-in Time" value={config.checkInTime} onChange={v=>sConfig({...config,checkInTime:v})} placeholder="15:00" />
+              <Inp label="Check-out Time" value={config.checkOutTime} onChange={v=>sConfig({...config,checkOutTime:v})} placeholder="11:00" />
+            </div>
+            <h4 style={{fontSize:15,fontWeight:700,margin:"20px 0 6px"}}>Photos</h4>
+            <p style={{fontSize:13,color:P.muted,margin:"0 0 14px"}}>The first photo is the main image. Add 5+ for the full gallery layout. To reorder, remove a photo and add it again.</p>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:10,marginBottom:14}}>
+              {(config.photos||[]).map((p,i)=>(
+                <div key={i} style={{position:"relative",aspectRatio:"4/3",borderRadius:10,background:`url(${p}) center/cover`,border:`1px solid ${P.border}`}}>
+                  {i===0 && <span style={{position:"absolute",top:6,left:6,background:P.text,color:"#fff",fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:5}}>COVER</span>}
+                  <button onClick={()=>rmPhoto(i)} style={{position:"absolute",top:6,right:6,width:24,height:24,borderRadius:"50%",background:"rgba(0,0,0,.6)",color:"#fff",border:"none",cursor:"pointer",fontSize:14,lineHeight:1}}>×</button>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <div style={{flex:1}}><Inp value={photoUrl} onChange={setPhotoUrl} placeholder="Paste image URL (https://...)" sx={{marginBottom:0}} /></div>
+              <Btn onClick={addPhoto} v="dark" sx={{whiteSpace:"nowrap"}}>Add Photo</Btn>
+            </div>
+          </div>
+        )}
+
+        {aTab==="calendar" && (
+          <div style={{background:P.card,borderRadius:16,padding:24,border:`1px solid ${P.borderLt}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <button onClick={prevMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:36,height:36,cursor:"pointer",fontSize:16}}>‹</button>
+              <h3 style={{fontFamily:FD,fontSize:18,fontWeight:700,margin:0}}>{MONTHS[mo]} {yr}</h3>
+              <button onClick={nextMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:36,height:36,cursor:"pointer",fontSize:16}}>›</button>
+            </div>
+            <Cal month={mo} year={yr} bookings={bookings} pricing={pricing} config={config} onDateClick={()=>{}} selStart={null} selEnd={null} mode="admin" />
+          </div>
+        )}
+
+        {aTab==="bookings" && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:0}}>Bookings</h3>
+              <Btn onClick={openNew} small>+ Add Booking</Btn>
+            </div>
+            {bookings.length===0 && <p style={{color:P.muted,fontSize:14,background:P.card,borderRadius:14,padding:24,textAlign:"center",border:`1px solid ${P.borderLt}`}}>No bookings yet. Add one to get started.</p>}
+            {[...bookings].sort((a,b)=>a.checkIn.localeCompare(b.checkIn)).map(b=>(
+              <div key={b.id} onClick={()=>openEdit(b)} style={{background:P.card,borderRadius:14,padding:20,marginBottom:10,border:`1px solid ${P.borderLt}`,cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,0.03)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                  <span style={{fontWeight:700,fontSize:15}}>{b.guestName||"Guest"}</span>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    {b.depositPaid && <span style={{fontSize:11,background:P.okLt,color:P.ok,padding:"2px 8px",borderRadius:6,fontWeight:600}}>Deposit ✓</span>}
+                    <span style={{fontSize:11,background:b.status==="confirmed"?P.okLt:P.surface,color:b.status==="confirmed"?P.ok:P.muted,padding:"2px 8px",borderRadius:6,fontWeight:600}}>{b.status||"confirmed"}</span>
+                  </div>
+                </div>
+                <div style={{fontSize:13,color:P.muted}}>{fmtNice(b.checkIn)} → {fmtNice(b.checkOut)} · {daysBetween(parseD(b.checkIn),parseD(b.checkOut))} nights {b.totalPrice?`· ${money(b.totalPrice)}`:""}</div>
+              </div>
+            ))}
+            <Modal open={bkOpen} onClose={()=>{setBkOpen(false);setEditId(null);}} title={editId?"Edit Booking":"New Booking"} wide>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
+                <Inp label="Guest Name" value={bf.guestName} onChange={v=>setBf(f=>({...f,guestName:v}))} placeholder="Jane Smith" />
+                <Inp label="Email" value={bf.guestEmail} onChange={v=>setBf(f=>({...f,guestEmail:v}))} placeholder="jane@email.com" />
+                <Inp label="Phone" value={bf.guestPhone} onChange={v=>setBf(f=>({...f,guestPhone:v}))} placeholder="+1 555-0000" />
+                <Inp label="Status" value={bf.status} onChange={v=>setBf(f=>({...f,status:v}))} placeholder="confirmed / pending" />
+                <Inp label="Check-in Date" value={bf.checkIn} onChange={v=>setBf(f=>({...f,checkIn:v}))} type="date" />
+                <Inp label="Check-out Date" value={bf.checkOut} onChange={v=>setBf(f=>({...f,checkOut:v}))} type="date" />
+                <Inp label="Total Price" value={bf.totalPrice} onChange={v=>setBf(f=>({...f,totalPrice:v}))} type="number" placeholder="0" />
+                <Inp label="Deposit Amount" value={bf.depositAmount} onChange={v=>setBf(f=>({...f,depositAmount:v}))} type="number" placeholder="0" />
+              </div>
+              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:14,margin:"4px 0 14px",cursor:"pointer"}}>
+                <input type="checkbox" checked={bf.depositPaid} onChange={e=>setBf(f=>({...f,depositPaid:e.target.checked}))} style={{width:18,height:18,accentColor:P.accent}} />
+                <span>Deposit paid</span>
+              </label>
+              <Inp label="Notes" value={bf.notes} onChange={v=>setBf(f=>({...f,notes:v}))} multi placeholder="Internal notes..." />
+              <div style={{display:"flex",justifyContent:"space-between",marginTop:8}}>
+                <div>{editId && <Btn v="danger" onClick={()=>delBk(editId)}>Delete</Btn>}</div>
+                <div style={{display:"flex",gap:8}}><Btn v="outline" onClick={()=>{setBkOpen(false);setEditId(null);}}>Cancel</Btn><Btn onClick={saveBk} disabled={!bf.checkIn||!bf.checkOut}>Save</Btn></div>
+              </div>
+            </Modal>
+          </div>
+        )}
+
+        {aTab==="pricing" && (
+          <div>
+            <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`,marginBottom:16}}>
+              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 6px"}}>Default Pricing</h3>
+              <p style={{fontSize:13,color:P.muted,margin:"0 0 18px"}}>The nightly rate shows under every available date on the guest calendar.</p>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                <Inp label="Nightly Rate ($)" value={config.defaultNightlyRate} onChange={v=>sConfig({...config,defaultNightlyRate:Number(v)||0})} type="number" />
+                <Inp label="Cleaning Fee ($)" value={config.cleaningFee} onChange={v=>sConfig({...config,cleaningFee:Number(v)||0})} type="number" />
+                <Inp label="Deposit ($)" value={config.depositAmount} onChange={v=>sConfig({...config,depositAmount:Number(v)||0})} type="number" />
+              </div>
+            </div>
+            <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
+              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 4px"}}>Custom Date Pricing</h3>
+              <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Override the nightly rate for specific date ranges (weekends, holidays, peak season).</p>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr auto",gap:10,alignItems:"end"}}>
+                <Inp label="Start Date" value={ps} onChange={setPs} type="date" />
+                <Inp label="End Date" value={pe} onChange={setPe} type="date" />
+                <Inp label="Price/Night ($)" value={pa} onChange={setPa} type="number" />
+                <Btn onClick={applyPrice} v="dark" sx={{marginBottom:14}}>Apply</Btn>
+              </div>
+              {Object.keys(pricing).length>0 && (
+                <div style={{marginTop:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:13,color:P.muted}}>{Object.keys(pricing).length} custom-priced dates</span>
+                  <Btn v="ghost" small onClick={()=>sPricing({})}>Clear All</Btn>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {aTab==="requests" && (
+          <div>
+            <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 16px"}}>Booking Requests</h3>
+            {requests.length===0 && <p style={{color:P.muted,fontSize:14,background:P.card,borderRadius:14,padding:24,textAlign:"center",border:`1px solid ${P.borderLt}`}}>No pending requests.</p>}
+            {requests.map(r=>(
+              <div key={r.id} style={{background:P.card,borderRadius:14,padding:20,marginBottom:10,border:`1px solid ${P.borderLt}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                  <span style={{fontWeight:700,fontSize:15}}>{r.guestName}</span>
+                  <span style={{fontSize:12,color:P.muted}}>{new Date(r.createdAt).toLocaleDateString()}</span>
+                </div>
+                <div style={{fontSize:13,color:P.muted,marginBottom:4}}>{fmtNice(r.checkIn)} → {fmtNice(r.checkOut)} · {money(r.totalPrice)}</div>
+                {r.guestEmail && <div style={{fontSize:13,color:P.muted}}>📧 {r.guestEmail}</div>}
+                {r.guestPhone && <div style={{fontSize:13,color:P.muted}}>📞 {r.guestPhone}</div>}
+                {r.notes && <div style={{fontSize:13,marginTop:6,fontStyle:"italic"}}>"{r.notes}"</div>}
+                <div style={{display:"flex",gap:8,marginTop:14}}>
+                  <Btn small onClick={()=>acceptReq(r)}>Accept &amp; Book</Btn>
+                  <Btn v="danger" small onClick={()=>sRequests(requests.filter(x=>x.id!==r.id))}>Decline</Btn>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {aTab==="guide" && (
+          <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
+            <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 4px"}}>Guest Entrance Guide</h3>
+            <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>This will be shown to guests as their access instructions.</p>
+            <Inp value={config.guestGuide} onChange={v=>sConfig({...config,guestGuide:v})} multi placeholder={"Enter access instructions...\n\nExample:\n1. The lockbox is on the front door\n2. Code is 4567\n3. Turn left after entry..."} />
+          </div>
+        )}
+
+        {aTab==="settings" && (
+          <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
+            <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 20px"}}>Access PINs</h3>
+            <Inp label="Admin PIN" value={config.adminPin} onChange={v=>sConfig({...config,adminPin:v})} placeholder="1234" />
+            <Inp label="Cleaning PIN" value={config.cleaningPin} onChange={v=>sConfig({...config,cleaningPin:v})} placeholder="0000" />
+            <p style={{fontSize:12,color:P.muted,margin:"8px 0 0"}}>Share the cleaning PIN with your cleaning crew so they can view the schedule.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
