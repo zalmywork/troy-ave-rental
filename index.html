@@ -626,7 +626,11 @@ function App() {
           {!isMobile && (
             <div style={{width:360,flexShrink:0,position:"sticky",top:88}}>
               {reservationCard}
-              <Btn v="outline" small onClick={()=>setPortalOpen(true)} sx={{width:"100%",marginTop:14}}>🔑 My Booking — enter your code</Btn>
+              <div style={{background:P.card,borderRadius:16,padding:24,marginTop:16,boxShadow:"0 6px 24px rgba(0,0,0,0.10)",border:`1px solid ${P.borderLt}`}}>
+                <div style={{fontSize:17,fontWeight:700,marginBottom:4}}>🔑 Already booked?</div>
+                <p style={{fontSize:14,color:P.muted,margin:"0 0 16px"}}>Enter your booking code to view your check-in guide and message the host.</p>
+                <Btn v="outline" onClick={()=>setPortalOpen(true)} sx={{width:"100%"}}>My Booking — enter your code</Btn>
+              </div>
             </div>
           )}
         </div>
