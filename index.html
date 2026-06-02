@@ -626,6 +626,7 @@ function App() {
           {!isMobile && (
             <div style={{width:360,flexShrink:0,position:"sticky",top:88}}>
               {reservationCard}
+              <Btn v="outline" small onClick={()=>setPortalOpen(true)} sx={{width:"100%",marginTop:14}}>🔑 My Booking — enter your code</Btn>
             </div>
           )}
         </div>
@@ -720,7 +721,7 @@ function App() {
         {/* footer */}
         <div style={{borderTop:`1px solid ${P.borderLt}`,marginTop:20}}>
           <div style={{maxWidth:1040,margin:"0 auto",padding:"24px",textAlign:"center"}}>
-            <Btn v="outline" small onClick={()=>setPortalOpen(true)} sx={{marginBottom:16}}>🔑 My Booking — enter your code</Btn>
+            {isMobile && <Btn v="outline" small onClick={()=>setPortalOpen(true)} sx={{marginBottom:16}}>🔑 My Booking — enter your code</Btn>}
             <div style={{display:"flex",justifyContent:"center",gap:14,alignItems:"center"}}>
               <button onClick={()=>{setLoginTarget("admin");setView("login");}} style={{background:"none",border:"none",fontFamily:F,fontSize:13,fontWeight:600,color:P.muted,cursor:"pointer",textDecoration:"underline"}}>Admin</button>
               <span style={{color:P.border}}>·</span>
