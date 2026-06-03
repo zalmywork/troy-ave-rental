@@ -105,6 +105,21 @@ function buildCustomer(kind, d, cfg) {
       sms: `Hi ${d.guestName || "there"}, we received your booking request for ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}). We'll confirm shortly. ${sign}`,
     };
   }
+  if (kind === "reply") {
+    const r = `Reach out to ${cfg.hostName || "your host"}${cfg.adminPhone ? ` at ${cfg.adminPhone}` : ""} anytime.`;
+    return {
+      email: {
+        subject: `Re: your message — ${cfg.propertyName || "your stay"}`,
+        html: emailShell(
+          `A note from ${cfg.hostName || "your host"}`,
+          `<p style="margin:0 0 14px;line-height:1.6">Hi ${d.guestName || "there"},</p><p style="margin:0 0 14px;line-height:1.7;white-space:pre-wrap">${(d.reply || "").replace(/</g, "&lt;")}</p><p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">${r}</p>`,
+          cfg
+        ),
+        text: `Hi ${d.guestName || "there"},\n\n${d.reply}\n\n${r}`,
+      },
+      sms: `${cfg.hostName || "Host"}: ${d.reply}\n\n${r}`,
+    };
+  }
   if (kind === "confirmed") {
     return {
       email: {
@@ -183,7 +198,7 @@ module.exports = async (req, res) => {
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
     const kind = body.kind;
     const d = body.data || {};
-    if (!["request", "confirmed", "message"].includes(kind)) return res.status(400).json({ error: "unknown kind" });
+    if (!["request", "confirmed", "message", "reply"].includes(kind)) return res.status(400).json({ error: "unknown kind" });
 
     const { data: store } = await openSheet();
     const cfg = store.config || {};

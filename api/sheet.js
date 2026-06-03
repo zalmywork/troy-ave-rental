@@ -29,6 +29,10 @@ module.exports = async (req, res) => {
         const reqs = Array.isArray(map.requests) ? map.requests : [];
         reqs.push(body.request);
         map.requests = reqs;
+      } else if (action === "addMessage") {
+        const msgs = Array.isArray(map.messages) ? map.messages : [];
+        msgs.push(body.message);
+        map.messages = msgs;
       } else if (action === "set") {
         if (!body.key) return res.status(400).json({ error: "missing key" });
         map[body.key] = body.value;

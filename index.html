@@ -134,6 +134,16 @@ function remoteAddRequest(request) {
     }).catch(e=>console.error("remoteAddRequest",e));
   } catch(e) { console.error(e); }
 }
+// Guests send a portal message straight to the Sheet (public, server-side append).
+function remoteAddMessage(message) {
+  try {
+    fetch("/api/sheet", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ action:"addMessage", message }),
+    }).catch(e=>console.error("remoteAddMessage",e));
+  } catch(e) { console.error(e); }
+}
 // Fire-and-forget notification (email/SMS to host or cleaner). Recipients are
 // resolved server-side from the Sheet config; we only send {kind, data}.
 function notify(kind, data) {
@@ -376,6 +386,7 @@ function App() {
   const [pricing, setPricing] = useState(()=>load("pricing",{}));
   const [requests, setRequests] = useState(()=>load("requests",[]));
   const [expenses, setExpenses] = useState(()=>load("expenses",[]));
+  const [messages, setMessages] = useState(()=>load("messages",[]));
 
   const [mo, setMo] = useState(new Date().getMonth());
   const [yr, setYr] = useState(new Date().getFullYear());
@@ -415,6 +426,10 @@ function App() {
   const [exCat, setExCat] = useState("Cleaning");
   const [exAmt, setExAmt] = useState("");
   const [exNote, setExNote] = useState("");
+  // guest message replies
+  const [replyId, setReplyId] = useState(null);
+  const [replyText, setReplyText] = useState("");
+  const [replyBusy, setReplyBusy] = useState(false);
 
   // save wrappers — update React state, the local cache, and the shared Sheet
   const sConfig = (c)=>{setConfig(c);save("config",c);remoteSave("config",c);};
@@ -422,6 +437,7 @@ function App() {
   const sPricing = (p)=>{setPricing(p);save("pricing",p);remoteSave("pricing",p);};
   const sRequests = (r)=>{setRequests(r);save("requests",r);remoteSave("requests",r);};
   const sExpenses = (x)=>{setExpenses(x);save("expenses",x);remoteSave("expenses",x);};
+  const sMessages = (x)=>{setMessages(x);save("messages",x);remoteSave("messages",x);};
 
   // Hydrate from the Sheet on first load so every device sees the same data.
   const [synced, setSynced] = useState(false);
@@ -434,6 +450,7 @@ function App() {
       if(d.pricing)  { setPricing(d.pricing);  save("pricing",d.pricing); }
       if(d.requests) { setRequests(d.requests); save("requests",d.requests); }
       if(d.expenses) { setExpenses(d.expenses); save("expenses",d.expenses); }
+      if(d.messages) { setMessages(d.messages); save("messages",d.messages); }
     }).finally(()=>{ if(alive) setSynced(true); });
     return ()=>{ alive=false; };
   },[]);
@@ -448,6 +465,19 @@ function App() {
     setExDate("");setExAmt("");setExNote("");setExCat("Cleaning");
   };
   const rmExpense = (id)=>sExpenses(expenses.filter(e=>e.id!==id));
+
+  // reply to a guest message — emails AND texts the guest your answer
+  const sendReply = async (m)=>{
+    if(!replyText.trim()) return;
+    setReplyBusy(true);
+    try{
+      await notify("reply",{ guestName:m.guestName, guestEmail:m.guestEmail, guestPhone:m.guestPhone, reply:replyText.trim() });
+      sMessages(messages.map(x=>x.id===m.id?{...x,answered:true,reply:replyText.trim(),answeredAt:new Date().toISOString()}:x));
+      setReplyId(null);setReplyText("");
+    }catch(e){ alert("Couldn't send the reply. Try again."); }
+    setReplyBusy(false);
+  };
+  const rmMessage = (id)=>sMessages(messages.filter(m=>m.id!==id));
   const metrics = useMemo(()=>{
     const byMonth = {}; // "2026-06" -> {nights, rev}
     let totalNights=0, totalRev=0;
@@ -496,17 +526,17 @@ function App() {
   const avgNight = nights>0 ? Math.round(nightsSubtotal/nights) : (Number(config.defaultNightlyRate)||0);
 
   // admin booking
-  const openNew = ()=>{setBf({guestName:"",guestEmail:"",guestPhone:"",checkIn:"",checkOut:"",totalPrice:"",depositPaid:false,depositAmount:"",notes:"",status:"confirmed"});setBkOpen(true);setEditId(null);};
+  const openNew = ()=>{setBf({guestName:"",guestEmail:"",guestPhone:"",checkIn:"",checkOut:"",totalPrice:"",depositPaid:false,depositAmount:"",notes:"",status:"pending"});setBkOpen(true);setEditId(null);};
   const openEdit = (b)=>{setBf({...b});setEditId(b.id);setBkOpen(true);};
   const saveBk = ()=>{
     if(!bf.checkIn||!bf.checkOut) return;
-    const isNew = !editId;
-    const fresh = {...bf,id:Date.now().toString(),code:genCode(),notifiedAt:new Date().toISOString()};
+    const fresh = {...bf,id:Date.now().toString(),code:genCode()};
     const updated = editId
       ? bookings.map(b=>b.id===editId?{...bf,id:editId,code:b.code||bf.code||genCode()}:b)
       : [...bookings,fresh];
     sBookings(updated);setBkOpen(false);setEditId(null);
-    if(isNew) notify("confirmed", fresh); // confirm guest + alert cleaner
+    // No auto-email: the booking holds the dates; hit "Confirm & notify guest"
+    // to send the guest their confirmation and alert the cleaner.
   };
   // Re-send (or send) the confirmation: guest email/SMS + cleaner email/SMS.
   const confirmBk = (b)=>{
@@ -555,12 +585,16 @@ function App() {
   const sendMsg = async ()=>{
     if(!msgText.trim()||!portalBk) return;
     setMsgErr("");
+    const data = {
+      id:Date.now().toString(), code:portalBk.code, guestName:portalBk.guestName,
+      guestEmail:portalBk.guestEmail||"", guestPhone:portalBk.guestPhone||"",
+      checkIn:portalBk.checkIn, checkOut:portalBk.checkOut, message:msgText.trim(),
+      createdAt:new Date().toISOString(), answered:false,
+    };
     try{
-      const r = await notify("message",{
-        code:portalBk.code, guestName:portalBk.guestName, guestEmail:portalBk.guestEmail||"",
-        checkIn:portalBk.checkIn, checkOut:portalBk.checkOut, message:msgText.trim(),
-      });
+      const r = await notify("message", data);
       if(!r || !r.ok) throw new Error("send failed");
+      if(!portalBk._test) remoteAddMessage(data); // log it so the host can reply
       setMsgSent(true);setMsgText("");
     }catch(e){ setMsgErr("Couldn't send right now. Please try again."); }
   };
@@ -896,6 +930,7 @@ function App() {
     {id:"bookings",label:"Bookings",icon:"📋"},
     {id:"pricing",label:"Pricing",icon:"💲"},
     {id:"requests",label:`Requests${requests.length?` (${requests.length})`:""}`,icon:"📩"},
+    {id:"messages",label:`Messages${messages.filter(m=>!m.answered).length?` (${messages.filter(m=>!m.answered).length})`:""}`,icon:"💬"},
     {id:"metrics",label:"Metrics",icon:"📊"},
     {id:"guide",label:"Guide",icon:"🔑"},
     {id:"settings",label:"Settings",icon:"⚙"},
@@ -1059,6 +1094,43 @@ function App() {
                   <Btn small onClick={()=>{ if(confirm(`Confirm this booking? This emails/texts ${r.guestName||"the guest"} a confirmation and notifies the cleaner.`)) acceptReq(r); }}>✓ Confirm &amp; Book</Btn>
                   <Btn v="danger" small onClick={()=>sRequests(requests.filter(x=>x.id!==r.id))}>Decline</Btn>
                 </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {aTab==="messages" && (
+          <div>
+            <h3 style={{fontFamily:FH,fontSize:24,fontWeight:600,margin:"0 0 4px"}}>Guest Messages</h3>
+            <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Replies are emailed <b>and</b> texted to the guest, signed off from {config.hostName||"you"}.</p>
+            {messages.length===0 && <p style={{color:P.muted,fontSize:14,background:P.card,borderRadius:14,padding:24,textAlign:"center",border:`1px solid ${P.borderLt}`}}>No guest messages yet.</p>}
+            {[...messages].sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")).map(m=>(
+              <div key={m.id} style={{background:P.card,borderRadius:16,padding:20,marginBottom:12,border:`1px solid ${P.borderLt}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <span style={{fontWeight:700,fontSize:15}}>{m.guestName||"Guest"} {m.code&&<span style={{fontSize:12,color:P.muted,fontWeight:500}}>· {m.code}</span>}</span>
+                  {m.answered
+                    ? <span style={{fontSize:12,background:P.okLt,color:P.ok,padding:"2px 10px",borderRadius:999,fontWeight:700}}>Replied</span>
+                    : <span style={{fontSize:12,background:P.accentLt,color:P.accentDk,padding:"2px 10px",borderRadius:999,fontWeight:700}}>Awaiting reply</span>}
+                </div>
+                <div style={{fontSize:12.5,color:P.muted,marginBottom:8}}>{m.guestEmail?`📧 ${m.guestEmail}`:""}{m.guestEmail&&m.guestPhone?"  ·  ":""}{m.guestPhone?`📞 ${m.guestPhone}`:""}{m.createdAt?`  ·  ${new Date(m.createdAt).toLocaleString()}`:""}</div>
+                <div style={{fontSize:15,lineHeight:1.6,background:P.surface,borderRadius:12,padding:"12px 14px",whiteSpace:"pre-wrap"}}>{m.message}</div>
+                {m.answered ? (
+                  <div style={{marginTop:10,fontSize:14,color:P.text}}><span style={{color:P.muted,fontSize:12,fontWeight:600}}>YOUR REPLY</span><div style={{whiteSpace:"pre-wrap",marginTop:2}}>{m.reply}</div></div>
+                ) : replyId===m.id ? (
+                  <div style={{marginTop:12}}>
+                    <Inp value={replyText} onChange={setReplyText} multi placeholder={`Reply to ${m.guestName||"the guest"}…`} />
+                    <div style={{display:"flex",gap:8,marginTop:6}}>
+                      <Btn small disabled={!replyText.trim()||replyBusy} onClick={()=>sendReply(m)}>{replyBusy?"Sending…":"Send reply (email + text)"}</Btn>
+                      <Btn v="ghost" small onClick={()=>{setReplyId(null);setReplyText("");}}>Cancel</Btn>
+                    </div>
+                    {!m.guestEmail && !m.guestPhone && <p style={{fontSize:12,color:P.accentDk,marginTop:6}}>⚠ No email or phone on file for this guest — the reply can't be delivered.</p>}
+                  </div>
+                ) : (
+                  <div style={{marginTop:12,display:"flex",gap:8}}>
+                    <Btn small onClick={()=>{setReplyId(m.id);setReplyText("");}}>Reply</Btn>
+                    <Btn v="ghost" small onClick={()=>rmMessage(m.id)}>Dismiss</Btn>
+                  </div>
+                )}
               </div>
             ))}
           </div>
