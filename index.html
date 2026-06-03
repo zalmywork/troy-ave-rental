@@ -38,7 +38,14 @@ const defaultConfig = {
   propertyName: "Your Rental Property",
   address: "",
   description: "",
-  photos: [],
+  photos: [
+    "/photos/01-kitchen.jpg",
+    "/photos/02-living-dining.jpg",
+    "/photos/03-bedroom-queen.jpg",
+    "/photos/04-bedroom-twin-green.jpg",
+    "/photos/05-bedroom-twin-rattan.jpg",
+    "/photos/06-bathroom.jpg",
+  ],
   checkInTime: "15:00",
   checkOutTime: "11:00",
   defaultNightlyRate: 0,
@@ -47,6 +54,21 @@ const defaultConfig = {
   guestGuide: "",
   adminPin: "1234",
   cleaningPin: "0000",
+  adminEmail: "",
+  adminPhone: "",
+  cleanerEmail: "",
+  cleanerPhone: "",
+};
+
+// Length-of-stay discounts (longest threshold first). Applied automatically to
+// the nightly subtotal and advertised on the guest page.
+const LOS_DISCOUNTS = [
+  { nights: 14, pct: 0.25 },
+  { nights: 7,  pct: 0.10 },
+];
+const stayDiscountPct = (nights) => {
+  for (const d of LOS_DISCOUNTS) if (nights >= d.nights) return d.pct;
+  return 0;
 };
 
 /* ── helpers ── */
@@ -100,6 +122,15 @@ function remoteAddRequest(request) {
       body: JSON.stringify({ action:"addRequest", request }),
     }).catch(e=>console.error("remoteAddRequest",e));
   } catch(e) { console.error(e); }
+}
+// Fire-and-forget notification (email/SMS to host or cleaner). Recipients are
+// resolved server-side from the Sheet config; we only send {kind, data}.
+function notify(kind, data) {
+  return fetch("/api/notify", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ kind, data }),
+  }).catch(e=>{ console.error("notify",e); return null; });
 }
 // Unique, human-friendly booking code, e.g. "TRA-7K2QX".
 function genCode() {
@@ -407,7 +438,9 @@ function App() {
     while(d<end){ t+=nightPrice(fmt(d),pricing,config); d=addDays(d,1); }
     return t;
   },[selA,selB,pricing,config]);
-  const total = nightsSubtotal + (Number(config.cleaningFee)||0);
+  const discPct = stayDiscountPct(nights);
+  const discAmt = Math.round(nightsSubtotal * discPct);
+  const total = nightsSubtotal - discAmt + (Number(config.cleaningFee)||0);
   const avgNight = nights>0 ? Math.round(nightsSubtotal/nights) : (Number(config.defaultNightlyRate)||0);
 
   // admin booking
@@ -415,10 +448,13 @@ function App() {
   const openEdit = (b)=>{setBf({...b});setEditId(b.id);setBkOpen(true);};
   const saveBk = ()=>{
     if(!bf.checkIn||!bf.checkOut) return;
+    const isNew = !editId;
+    const fresh = {...bf,id:Date.now().toString(),code:genCode()};
     const updated = editId
       ? bookings.map(b=>b.id===editId?{...bf,id:editId,code:b.code||bf.code||genCode()}:b)
-      : [...bookings,{...bf,id:Date.now().toString(),code:genCode()}];
+      : [...bookings,fresh];
     sBookings(updated);setBkOpen(false);setEditId(null);
+    if(isNew) notify("booking", fresh); // tell the cleaner to add the turnover
   };
   const delBk = (id)=>{sBookings(bookings.filter(b=>b.id!==id));setBkOpen(false);setEditId(null);};
 
@@ -430,8 +466,10 @@ function App() {
   };
 
   const acceptReq = (req)=>{
-    sBookings([...bookings,{id:Date.now().toString(),code:genCode(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed"}]);
+    const bk = {id:Date.now().toString(),code:genCode(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed"};
+    sBookings([...bookings,bk]);
     sRequests(requests.filter(r=>r.id!==req.id));
+    notify("booking", bk); // tell the cleaner to add the turnover
   };
 
   const submitReq = ()=>{
@@ -439,6 +477,7 @@ function App() {
     const req = {id:Date.now().toString(),guestName:gName,guestEmail:gEmail,guestPhone:gPhone,checkIn:selA,checkOut:selB,totalPrice:total,notes:gNotes,createdAt:new Date().toISOString()};
     setRequests(rs=>[...rs,req]); save("requests",[...requests,req]); // local cache
     remoteAddRequest(req); // server-side append — never clobbers other devices' requests
+    notify("request", req); // email/SMS the host
     setSent(true);setGName("");setGEmail("");setGPhone("");setGNotes("");setSelA(null);setSelB(null);
   };
 
@@ -459,15 +498,11 @@ function App() {
     if(!msgText.trim()||!portalBk) return;
     setMsgErr("");
     try{
-      const r = await fetch("/api/message",{
-        method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          code:portalBk.code, guestName:portalBk.guestName, guestEmail:portalBk.guestEmail||"",
-          checkIn:portalBk.checkIn, checkOut:portalBk.checkOut,
-          property:config.propertyName, message:msgText.trim(),
-        }),
+      const r = await notify("message",{
+        code:portalBk.code, guestName:portalBk.guestName, guestEmail:portalBk.guestEmail||"",
+        checkIn:portalBk.checkIn, checkOut:portalBk.checkOut, message:msgText.trim(),
       });
-      if(!r.ok) throw new Error("send failed");
+      if(!r || !r.ok) throw new Error("send failed");
       setMsgSent(true);setMsgText("");
     }catch(e){ setMsgErr("Couldn't send right now. Please try again."); }
   };
@@ -530,6 +565,10 @@ function App() {
                 <span style={{textDecoration:"underline",color:P.muted}}>{money(avgNight)} × {nights} night{nights!==1?"s":""}</span>
                 <span>{money(nightsSubtotal)}</span>
               </div>
+              {discAmt>0 && <div style={{display:"flex",justifyContent:"space-between",marginBottom:8,color:P.ok,fontWeight:600}}>
+                <span>Length-of-stay discount ({Math.round(discPct*100)}% off)</span>
+                <span>−{money(discAmt)}</span>
+              </div>}
               {config.cleaningFee>0 && <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
                 <span style={{textDecoration:"underline",color:P.muted}}>Cleaning fee</span>
                 <span>{money(config.cleaningFee)}</span>
@@ -603,7 +642,11 @@ function App() {
             {/* calendar */}
             <div>
               <h2 style={{fontFamily:FD,fontSize:22,fontWeight:700,margin:"0 0 4px"}}>{nights>0?`${nights} night${nights!==1?"s":""}`:"Choose your dates"}</h2>
-              <p style={{fontSize:14,color:P.muted,margin:"0 0 18px"}}>{selA&&selB?`${fmtNice(selA)} – ${fmtNice(selB)}`:"Prices shown are per night. Tap a start and end date."}</p>
+              <p style={{fontSize:14,color:P.muted,margin:"0 0 14px"}}>{selA&&selB?`${fmtNice(selA)} – ${fmtNice(selB)}`:"Prices shown are per night. Tap a start and end date."}</p>
+              <div style={{display:"flex",alignItems:"center",gap:8,background:P.okLt,color:P.ok,borderRadius:12,padding:"10px 14px",fontSize:13,fontWeight:600,marginBottom:18}}>
+                <span style={{fontSize:16}}>💸</span>
+                <span>Stay longer, save more — <strong>10% off 7+ nights</strong> · <strong>25% off 14+ nights</strong>. Applied automatically.</span>
+              </div>
               <div style={{border:`1px solid ${P.borderLt}`,borderRadius:16,padding:isMobile?16:24}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
                   <button onClick={prevMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:36,height:36,cursor:"pointer",fontSize:16}}>‹</button>
@@ -661,6 +704,7 @@ function App() {
               <div style={{background:P.surface,borderRadius:12,padding:16,marginBottom:20}}>
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:6}}><span style={{color:P.muted}}>Dates</span><span style={{fontWeight:600}}>{selA&&fmtShort(selA)} – {selB&&fmtShort(selB)}</span></div>
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:6}}><span style={{color:P.muted}}>{money(avgNight)} × {nights} nights</span><span>{money(nightsSubtotal)}</span></div>
+                {discAmt>0 && <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:6,color:P.ok,fontWeight:600}}><span>{Math.round(discPct*100)}% length-of-stay discount</span><span>−{money(discAmt)}</span></div>}
                 {config.cleaningFee>0 && <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:6}}><span style={{color:P.muted}}>Cleaning fee</span><span>{money(config.cleaningFee)}</span></div>}
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:700,borderTop:`1px solid ${P.border}`,paddingTop:8,marginTop:4}}><span>Total</span><span>{money(total)}</span></div>
               </div>
@@ -958,11 +1002,24 @@ function App() {
         )}
 
         {aTab==="settings" && (
-          <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
-            <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 20px"}}>Access PINs</h3>
-            <Inp label="Admin PIN" value={config.adminPin} onChange={v=>sConfig({...config,adminPin:v})} placeholder="1234" />
-            <Inp label="Cleaning PIN" value={config.cleaningPin} onChange={v=>sConfig({...config,cleaningPin:v})} placeholder="0000" />
-            <p style={{fontSize:12,color:P.muted,margin:"8px 0 0"}}>Share the cleaning PIN with your cleaning crew so they can view the schedule.</p>
+          <div>
+            <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`,marginBottom:20}}>
+              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 6px"}}>Notifications</h3>
+              <p style={{fontSize:13,color:P.muted,margin:"0 0 20px"}}>You'll get a detailed email (and text, if set up) on every booking request and guest message. Your cleaner is notified whenever a booking is confirmed, so they can add the turnover to their calendar.</p>
+              <h4 style={{fontSize:14,fontWeight:700,margin:"0 0 10px"}}>🏠 Host</h4>
+              <Inp label="Admin email" value={config.adminEmail} onChange={v=>sConfig({...config,adminEmail:v})} type="email" placeholder="you@email.com" />
+              <Inp label="Admin phone (for SMS)" value={config.adminPhone} onChange={v=>sConfig({...config,adminPhone:v})} type="tel" placeholder="+1 555 000 0000" />
+              <h4 style={{fontSize:14,fontWeight:700,margin:"18px 0 10px"}}>🧹 Cleaner</h4>
+              <Inp label="Cleaner email" value={config.cleanerEmail} onChange={v=>sConfig({...config,cleanerEmail:v})} type="email" placeholder="cleaner@email.com" />
+              <Inp label="Cleaner phone (for SMS)" value={config.cleanerPhone} onChange={v=>sConfig({...config,cleanerPhone:v})} type="tel" placeholder="+1 555 000 0000" />
+              <p style={{fontSize:12,color:P.muted,margin:"10px 0 0"}}>Use full international format for phone numbers, e.g. +1 for the US. Texts require SMS to be enabled (Twilio) — emails work on their own.</p>
+            </div>
+            <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
+              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 20px"}}>Access PINs</h3>
+              <Inp label="Admin PIN" value={config.adminPin} onChange={v=>sConfig({...config,adminPin:v})} placeholder="1234" />
+              <Inp label="Cleaning PIN" value={config.cleaningPin} onChange={v=>sConfig({...config,cleaningPin:v})} placeholder="0000" />
+              <p style={{fontSize:12,color:P.muted,margin:"8px 0 0"}}>Share the cleaning PIN with your cleaning crew so they can view the schedule.</p>
+            </div>
           </div>
         )}
       </div>
