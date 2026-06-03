@@ -342,7 +342,7 @@ function Cal({ month, year, bookings, pricing, config, onDateClick, selStart, se
         {cells.map((day,i)=>{
           if(!day) return <div key={"e"+i}/>;
           const ds = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
-          const booked = bookings.some(b=>ds>=b.checkIn && ds<b.checkOut);
+          const booked = bookings.some(b=>b.status!=="cancelled" && ds>=b.checkIn && ds<b.checkOut);
           const price = nightPrice(ds, pricing, config);
           const isSel = selStart && selEnd && ds>=selStart && ds<=selEnd;
           const isStart = ds===selStart;
@@ -430,6 +430,7 @@ function App() {
   const [replyId, setReplyId] = useState(null);
   const [replyText, setReplyText] = useState("");
   const [replyBusy, setReplyBusy] = useState(false);
+  const [metricsMonth, setMetricsMonth] = useState("all"); // "all" or "YYYY-MM"
 
   // save wrappers — update React state, the local cache, and the shared Sheet
   const sConfig = (c)=>{setConfig(c);save("config",c);remoteSave("config",c);};
@@ -479,9 +480,10 @@ function App() {
   };
   const rmMessage = (id)=>sMessages(messages.filter(m=>m.id!==id));
   const metrics = useMemo(()=>{
-    const byMonth = {}; // "2026-06" -> {nights, rev}
+    const byMonth = {};   // "2026-06" -> {nights, rev}
+    const expByMonth = {};// "2026-06" -> expense total
     let totalNights=0, totalRev=0;
-    bookings.forEach(b=>{
+    bookings.filter(b=>b.status!=="cancelled").forEach(b=>{
       if(!b.checkIn||!b.checkOut) return;
       const n = Math.max(0, daysBetween(parseD(b.checkIn),parseD(b.checkOut)));
       const rev = Number(b.totalPrice)||0;
@@ -492,23 +494,25 @@ function App() {
     });
     const expByCat = {};
     let totalExp=0;
-    expenses.forEach(e=>{ const a=Number(e.amount)||0; totalExp+=a; expByCat[e.category]=(expByCat[e.category]||0)+a; });
+    expenses.forEach(e=>{ const a=Number(e.amount)||0; totalExp+=a; expByCat[e.category]=(expByCat[e.category]||0)+a;
+      const k=(e.date||"").slice(0,7); if(k) expByMonth[k]=(expByMonth[k]||0)+a; });
     const todayS = fmt(new Date());
     const thisYM = todayS.slice(0,7);
     const weekAgo = fmt(addDays(new Date(), -7));
     let weekNights=0;
-    bookings.forEach(b=>{ if(b.checkIn>=weekAgo && b.checkIn<=todayS) weekNights+=Math.max(0,daysBetween(parseD(b.checkIn),parseD(b.checkOut))); });
-    const months = Object.keys(byMonth).sort().reverse();
-    return { byMonth, months, totalNights, totalRev, totalExp, net: totalRev-totalExp,
+    bookings.filter(b=>b.status!=="cancelled").forEach(b=>{ if(b.checkIn>=weekAgo && b.checkIn<=todayS) weekNights+=Math.max(0,daysBetween(parseD(b.checkIn),parseD(b.checkOut))); });
+    const months = Array.from(new Set([...Object.keys(byMonth), ...Object.keys(expByMonth)])).sort().reverse();
+    return { byMonth, expByMonth, months, totalNights, totalRev, totalExp, net: totalRev-totalExp,
              thisMonth: byMonth[thisYM]||{nights:0,rev:0}, weekNights, expByCat };
   },[bookings,expenses]);
 
-  // guest date pick
+  // guest date pick (cancelled bookings don't block)
   const guestClick = (ds)=>{
-    if(bookings.some(b=>ds>=b.checkIn&&ds<b.checkOut)) return;
+    const active = bookings.filter(b=>b.status!=="cancelled");
+    if(active.some(b=>ds>=b.checkIn&&ds<b.checkOut)) return;
     if(!selA||(selA&&selB)){setSelA(ds);setSelB(null);}
     else if(ds>selA){
-      if(bookings.some(b=>selA<b.checkOut&&ds>b.checkIn)){setSelA(ds);setSelB(null);}
+      if(active.some(b=>selA<b.checkOut&&ds>b.checkIn)){setSelA(ds);setSelB(null);}
       else setSelB(ds);
     } else {setSelA(ds);setSelB(null);}
   };
@@ -544,6 +548,12 @@ function App() {
     notify("confirmed", {...b,status:"confirmed"});
   };
   const delBk = (id)=>{sBookings(bookings.filter(b=>b.id!==id));setBkOpen(false);setEditId(null);};
+  // Cancel: keep the record (status "cancelled"), free up the dates, notify everyone.
+  const cancelBk = (b)=>{
+    sBookings(bookings.map(x=>x.id===b.id?{...x,status:"cancelled"}:x));
+    notify("cancelled",{...b,status:"cancelled"});
+  };
+  const uncancelBk = (b)=>sBookings(bookings.map(x=>x.id===b.id?{...x,status:"confirmed"}:x));
 
   const applyPrice = ()=>{
     if(!ps||!pe||!pa) return;
@@ -999,29 +1009,44 @@ function App() {
               <Btn onClick={openNew} small>+ Add Booking</Btn>
             </div>
             {bookings.length===0 && <p style={{color:P.muted,fontSize:14,background:P.card,borderRadius:14,padding:24,textAlign:"center",border:`1px solid ${P.borderLt}`}}>No bookings yet. Add one to get started.</p>}
-            {[...bookings].sort((a,b)=>a.checkIn.localeCompare(b.checkIn)).map(b=>(
-              <div key={b.id} onClick={()=>openEdit(b)} style={{background:P.card,borderRadius:14,padding:20,marginBottom:10,border:`1px solid ${P.borderLt}`,cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,0.03)"}}>
+            {[...bookings].sort((a,b)=>a.checkIn.localeCompare(b.checkIn)).map(b=>{
+              const cancelled = b.status==="cancelled";
+              return (
+              <div key={b.id} onClick={()=>openEdit(b)} style={{background:P.card,borderRadius:14,padding:20,marginBottom:10,border:`1px solid ${P.borderLt}`,cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,0.03)",opacity:cancelled?.62:1}}>
                 <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
-                  <span style={{fontWeight:700,fontSize:15}}>{b.guestName||"Guest"}</span>
+                  <span style={{fontWeight:700,fontSize:15,textDecoration:cancelled?"line-through":"none"}}>{b.guestName||"Guest"}</span>
                   <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    {b.depositPaid && <span style={{fontSize:11,background:P.okLt,color:P.ok,padding:"2px 8px",borderRadius:6,fontWeight:600}}>Deposit ✓</span>}
-                    <span style={{fontSize:11,background:b.status==="confirmed"?P.okLt:P.surface,color:b.status==="confirmed"?P.ok:P.muted,padding:"2px 8px",borderRadius:6,fontWeight:600}}>{b.status||"confirmed"}</span>
+                    {b.depositPaid && !cancelled && <span style={{fontSize:11,background:P.okLt,color:P.ok,padding:"2px 8px",borderRadius:6,fontWeight:600}}>Deposit ✓</span>}
+                    <span style={{fontSize:11,background:cancelled?"#F6E7E2":b.status==="confirmed"?P.okLt:P.surface,color:cancelled?P.accentDk:b.status==="confirmed"?P.ok:P.muted,padding:"2px 8px",borderRadius:6,fontWeight:600}}>{b.status||"pending"}</span>
                   </div>
                 </div>
                 <div style={{fontSize:13,color:P.muted}}>{fmtNice(b.checkIn)} → {fmtNice(b.checkOut)} · {daysBetween(parseD(b.checkIn),parseD(b.checkOut))} nights {b.totalPrice?`· ${money(b.totalPrice)}`:""}</div>
                 {(b.guestEmail||b.guestPhone) && <div style={{fontSize:12.5,color:P.muted,marginTop:5}}>{b.guestEmail?`📧 ${b.guestEmail}`:""}{b.guestEmail&&b.guestPhone?"  ·  ":""}{b.guestPhone?`📞 ${b.guestPhone}`:""}</div>}
                 {b.code && <div style={{fontSize:12,marginTop:6,fontWeight:600,letterSpacing:.5}}>🔑 Code: <span style={{fontFamily:FD,background:P.cleanLt,padding:"2px 8px",borderRadius:6}}>{b.code}</span> <span style={{color:P.faint,fontWeight:400}}>· share with guest</span></div>}
                 <div style={{marginTop:12,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}} onClick={e=>e.stopPropagation()}>
-                  {b.notifiedAt
-                    ? <>
-                        <span style={{fontSize:13,color:P.ok,fontWeight:700}}>✓ Notified {new Date(b.notifiedAt).toLocaleDateString()}</span>
-                        <Btn v="ghost" small onClick={()=>{ if(confirm("Resend the confirmation to the guest and cleaner?")) confirmBk(b); }}>Resend</Btn>
-                      </>
-                    : <Btn v="outline" small onClick={()=>{ if(confirm(`Send confirmation${b.guestEmail?` to ${b.guestEmail}`:""} and notify the cleaner?`)) confirmBk(b); }}>✓ Confirm &amp; notify guest</Btn>}
-                  {!b.guestEmail && <span style={{fontSize:12,color:P.accentDk,fontWeight:600}}>⚠ No guest email — they won't get a confirmation</span>}
+                  {cancelled ? (
+                    <>
+                      <span style={{fontSize:13,color:P.accentDk,fontWeight:700}}>Cancelled — dates freed</span>
+                      <Btn v="ghost" small onClick={()=>uncancelBk(b)}>Restore</Btn>
+                      <Btn v="ghost" small onClick={()=>{ if(confirm("Permanently delete this booking? This can't be undone.")) delBk(b.id); }}>Delete</Btn>
+                    </>
+                  ) : (
+                    <>
+                      {b.notifiedAt
+                        ? <>
+                            <span style={{fontSize:13,color:P.ok,fontWeight:700}}>✓ Notified {new Date(b.notifiedAt).toLocaleDateString()}</span>
+                            <Btn v="ghost" small onClick={()=>{ if(confirm("Resend the confirmation to the guest and cleaner?")) confirmBk(b); }}>Resend</Btn>
+                          </>
+                        : <Btn v="outline" small onClick={()=>{ if(confirm(`Send confirmation${b.guestEmail?` to ${b.guestEmail}`:""} and notify the cleaner?`)) confirmBk(b); }}>✓ Confirm &amp; notify guest</Btn>}
+                      <Btn v="ghost" small onClick={()=>{ if(confirm("Cancel this booking? This frees the dates and emails/texts the guest and cleaner a cancellation notice.")) cancelBk(b); }}>Cancel</Btn>
+                      <Btn v="ghost" small onClick={()=>{ if(confirm("Permanently delete this booking (no notification)? For test cleanup.")) delBk(b.id); }}>Delete</Btn>
+                      {!b.guestEmail && <span style={{fontSize:12,color:P.accentDk,fontWeight:600}}>⚠ No guest email — they won't get a confirmation</span>}
+                    </>
+                  )}
                 </div>
               </div>
-            ))}
+              );
+            })}
             <Modal open={bkOpen} onClose={()=>{setBkOpen(false);setEditId(null);}} title={editId?"Edit Booking":"New Booking"} wide>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
                 <Inp label="Guest Name" value={bf.guestName} onChange={v=>setBf(f=>({...f,guestName:v}))} placeholder="Jane Smith" />
@@ -1144,14 +1169,27 @@ function App() {
             </div>
           );
           const mLabel = (k)=>{ const [y,m]=k.split("-"); return `${MONTHS[Number(m)-1].slice(0,3)} ${y}`; };
+          const sel = metricsMonth;
+          const pRev = sel==="all" ? metrics.totalRev : (metrics.byMonth[sel]?.rev||0);
+          const pNights = sel==="all" ? metrics.totalNights : (metrics.byMonth[sel]?.nights||0);
+          const pExp = sel==="all" ? metrics.totalExp : (metrics.expByMonth[sel]||0);
+          const pNet = pRev - pExp;
+          const periodLabel = sel==="all" ? "All time" : mLabel(sel);
           return (
           <div>
-            <h3 style={{fontFamily:FH,fontSize:24,fontWeight:600,margin:"0 0 16px"}}>Metrics &amp; P&amp;L</h3>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:16}}>
+              <h3 style={{fontFamily:FH,fontSize:24,fontWeight:600,margin:0}}>Metrics &amp; P&amp;L</h3>
+              <select value={metricsMonth} onChange={e=>setMetricsMonth(e.target.value)} style={{fontFamily:F,fontSize:14,fontWeight:600,padding:"10px 14px",border:`1px solid ${P.border}`,borderRadius:999,background:P.card,color:P.text,cursor:"pointer"}}>
+                <option value="all">All time</option>
+                {metrics.months.map(k=><option key={k} value={k}>{mLabel(k)}</option>)}
+              </select>
+            </div>
+            <div style={{fontSize:13,color:P.muted,fontWeight:600,marginBottom:8}}>Showing: {periodLabel}</div>
             <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:14}}>
-              {stat("Revenue", money(metrics.totalRev)||"$0")}
-              {stat("Expenses", money(metrics.totalExp)||"$0")}
-              {stat("Net P&L", (metrics.net<0?"−":"")+ (money(Math.abs(metrics.net))||"$0"), metrics.net>=0?P.ok:P.accentDk)}
-              {stat("Nights rented", String(metrics.totalNights))}
+              {stat("Revenue", money(pRev)||"$0")}
+              {stat("Expenses", money(pExp)||"$0")}
+              {stat("Net P&L", (pNet<0?"−":"")+ (money(Math.abs(pNet))||"$0"), pNet>=0?P.ok:P.accentDk)}
+              {stat("Nights rented", String(pNights))}
             </div>
             <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:24}}>
               {stat("This month — nights", String(metrics.thisMonth.nights))}
@@ -1163,9 +1201,9 @@ function App() {
               <h4 style={{fontFamily:FD,fontSize:16,fontWeight:700,margin:"0 0 12px"}}>By month</h4>
               {metrics.months.length===0 && <p style={{fontSize:14,color:P.muted,margin:0}}>No bookings yet.</p>}
               {metrics.months.map(k=>(
-                <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${P.borderLt}`}}>
+                <div key={k} onClick={()=>setMetricsMonth(k)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 8px",margin:"0 -8px",borderBottom:`1px solid ${P.borderLt}`,cursor:"pointer",borderRadius:8,background:metricsMonth===k?P.accentLt:"transparent"}}>
                   <span style={{fontWeight:600,fontSize:14}}>{mLabel(k)}</span>
-                  <span style={{fontSize:14,color:P.muted}}>{metrics.byMonth[k].nights} night{metrics.byMonth[k].nights!==1?"s":""} · <span style={{color:P.text,fontWeight:600}}>{money(metrics.byMonth[k].rev)||"$0"}</span></span>
+                  <span style={{fontSize:14,color:P.muted}}>{(metrics.byMonth[k]?.nights)||0} night{(metrics.byMonth[k]?.nights)!==1?"s":""} · <span style={{color:P.text,fontWeight:600}}>{money(metrics.byMonth[k]?.rev||0)||"$0"}</span></span>
                 </div>
               ))}
             </div>

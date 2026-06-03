@@ -105,6 +105,21 @@ function buildCustomer(kind, d, cfg) {
       sms: `Hi ${d.guestName || "there"}, we received your booking request for ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}). We'll confirm shortly. ${sign}`,
     };
   }
+  if (kind === "cancelled") {
+    const sign = `Questions? Reach out to ${cfg.hostName || "your host"}${cfg.adminPhone ? ` at ${cfg.adminPhone}` : ""}.`;
+    return {
+      email: {
+        subject: `Reservation cancelled — ${cfg.propertyName || "your stay"}`,
+        html: emailShell(
+          "Reservation cancelled",
+          `<p style="margin:0 0 16px;line-height:1.6">Hi ${d.guestName || "there"}, your reservation for the dates below has been cancelled.</p>${summaryTable(d, cfg)}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">If this is unexpected or you have questions, just reply to this email.</p>`,
+          cfg
+        ),
+        text: `Hi ${d.guestName || "there"}, your reservation at ${cfg.propertyName} for ${niceDate(d.checkIn)}–${niceDate(d.checkOut)} has been cancelled. ${sign}`,
+      },
+      sms: `Hi ${d.guestName || "there"}, your reservation at ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}) has been CANCELLED. ${sign}`,
+    };
+  }
   if (kind === "reply") {
     const r = `Reach out to ${cfg.hostName || "your host"}${cfg.adminPhone ? ` at ${cfg.adminPhone}` : ""} anytime.`;
     return {
@@ -174,9 +189,29 @@ function buildAdmin(kind, d, cfg) {
       sms: null,
     };
   }
+  if (kind === "cancelled") {
+    return {
+      email: {
+        subject: `Booking cancelled — ${d.guestName || "Guest"}`,
+        html: emailShell("Booking cancelled", `${summaryTable(d, cfg)}<p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">The guest and cleaner have been notified.</p>`, cfg),
+        text: `Booking cancelled: ${d.guestName}, ${niceDate(d.checkIn)}–${niceDate(d.checkOut)}.`,
+      },
+      sms: null,
+    };
+  }
   return null;
 }
-function buildCleaner(d, cfg) {
+function buildCleaner(d, cfg, kind) {
+  if (kind === "cancelled") {
+    return {
+      email: {
+        subject: `Booking cancelled — ${niceDate(d.checkOut)} (${cfg.propertyName || "rental"})`,
+        html: emailShell("Booking cancelled — no turnover", `${summaryTable(d, cfg)}<p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">This booking was cancelled — no cleaning is needed for these dates.</p>`, cfg),
+        text: `Cancelled: the booking at ${cfg.propertyName} for ${niceDate(d.checkIn)}–${niceDate(d.checkOut)} is cancelled. No cleaning needed.`,
+      },
+      sms: `Cancelled: ${cfg.propertyName || "booking"} ${niceDate(d.checkIn)}–${niceDate(d.checkOut)} is cancelled — no cleaning needed for these dates.`,
+    };
+  }
   return {
     email: {
       subject: `Turnover needed — ${niceDate(d.checkOut)} (${cfg.propertyName || "rental"})`,
@@ -198,7 +233,7 @@ module.exports = async (req, res) => {
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
     const kind = body.kind;
     const d = body.data || {};
-    if (!["request", "confirmed", "message", "reply"].includes(kind)) return res.status(400).json({ error: "unknown kind" });
+    if (!["request", "confirmed", "message", "reply", "cancelled"].includes(kind)) return res.status(400).json({ error: "unknown kind" });
 
     const { data: store } = await openSheet();
     const cfg = store.config || {};
@@ -216,9 +251,9 @@ module.exports = async (req, res) => {
       if (cfg.adminEmail && adm.email) results.push(await sendEmail(cfg.adminEmail, adm.email.subject, adm.email.html, adm.email.text, d.guestEmail));
       if (cfg.adminPhone && adm.sms) results.push(await sendSms(cfg.adminPhone, adm.sms));
     }
-    // Cleaner — only on confirmed
-    if (kind === "confirmed") {
-      const cl = buildCleaner(d, cfg);
+    // Cleaner — on confirmed and cancelled
+    if (kind === "confirmed" || kind === "cancelled") {
+      const cl = buildCleaner(d, cfg, kind);
       if (cfg.cleanerEmail) results.push(await sendEmail(cfg.cleanerEmail, cl.email.subject, cl.email.html, cl.email.text));
       if (cfg.cleanerPhone) results.push(await sendSms(cfg.cleanerPhone, cl.sms));
     }
