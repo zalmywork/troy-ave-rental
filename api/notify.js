@@ -92,17 +92,20 @@ function summaryTable(d, cfg) {
 function buildCustomer(kind, d, cfg) {
   const sign = `Questions? Reach out to ${cfg.hostName || "your host"}${cfg.adminPhone ? ` at ${cfg.adminPhone}` : ""}.`;
   if (kind === "request") {
+    const host = cfg.hostName || "your host";
+    const payLine = `To secure these dates, please reach out to ${host}${cfg.adminPhone ? ` at ${cfg.adminPhone}` : ""} to arrange payment. We can't confirm your booking until payment is received.`;
+    const payBox = `<div style="margin-top:16px;padding:14px 16px;background:${BRAND.accentLt};border:1px solid ${BRAND.accent};border-radius:12px;font-size:14px;line-height:1.6;color:${BRAND.ink}"><b>Action needed:</b> ${payLine}</div>`;
     return {
       email: {
         subject: `Reservation requested — ${cfg.propertyName || "your stay"}`,
         html: emailShell(
           "Reservation requested",
-          `<p style="margin:0 0 16px;line-height:1.6">Hi ${d.guestName || "there"}, thanks for your request! We've received it and ${cfg.hostName || "your host"} will review and confirm shortly. Here are the details:</p>${summaryTable(d, cfg)}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">This is a request, not yet a confirmed booking. You'll get a confirmation email once it's approved. You can reply to this email to reach ${cfg.hostName || "your host"}.</p>`,
+          `<p style="margin:0 0 16px;line-height:1.6">Hi ${d.guestName || "there"}, thanks for your request! We've received it and ${host} will review it. Here are the details:</p>${summaryTable(d, cfg)}${payBox}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">This is a request, not yet a confirmed booking — you'll get a confirmation email once payment is arranged and it's approved. You can reply to this email to reach ${host}.</p>`,
           cfg
         ),
-        text: `Hi ${d.guestName || "there"}, we received your reservation request for ${cfg.propertyName} (${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}). ${cfg.hostName || "Your host"} will confirm shortly. ${sign}`,
+        text: `Hi ${d.guestName || "there"}, we received your reservation request for ${cfg.propertyName} (${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}). ${payLine}`,
       },
-      sms: `Hi ${d.guestName || "there"}, we received your booking request for ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}). We'll confirm shortly. ${sign}`,
+      sms: `Hi ${d.guestName || "there"}, we received your booking request for ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}). ${payLine}`,
     };
   }
   if (kind === "cancelled") {
