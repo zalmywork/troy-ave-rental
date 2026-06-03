@@ -566,7 +566,7 @@ function App() {
   };
 
   const acceptReq = (req)=>{
-    const bk = {id:Date.now().toString(),code:genCode(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed"};
+    const bk = {id:Date.now().toString(),code:genCode(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed",notifiedAt:new Date().toISOString()};
     sBookings([...bookings,bk]);
     sRequests(requests.filter(r=>r.id!==req.id));
     notify("confirmed", bk); // confirm the guest + alert the cleaner
@@ -1038,9 +1038,9 @@ function App() {
                     </>
                   ) : (
                     <>
-                      {b.notifiedAt
+                      {(b.notifiedAt||b.status==="confirmed")
                         ? <>
-                            <span style={{fontSize:13,color:P.ok,fontWeight:700}}>✓ Notified {new Date(b.notifiedAt).toLocaleDateString()}</span>
+                            <span style={{fontSize:13,color:P.ok,fontWeight:700}}>✓ {b.notifiedAt?`Notified ${new Date(b.notifiedAt).toLocaleDateString()}`:"Confirmed"}</span>
                             <Btn v="ghost" small onClick={()=>{ if(confirm("Resend the confirmation to the guest and cleaner?")) confirmBk(b); }}>Resend</Btn>
                           </>
                         : <Btn v="outline" small onClick={()=>{ if(confirm(`Send confirmation${b.guestEmail?` to ${b.guestEmail}`:""} and notify the cleaner?`)) confirmBk(b); }}>✓ Confirm &amp; notify guest</Btn>}
