@@ -122,17 +122,21 @@ function buildCustomer(kind, d, cfg) {
   }
   if (kind === "reply") {
     const r = `Reach out to ${cfg.hostName || "your host"}${cfg.adminPhone ? ` at ${cfg.adminPhone}` : ""} anytime.`;
+    const orig = (d.originalMessage || "").trim();
+    const quotedHtml = orig
+      ? `<div style="margin-top:16px;padding:12px 14px;background:${BRAND.bg};border-left:3px solid ${BRAND.line};border-radius:8px"><div style="font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:${BRAND.muted};font-weight:700;margin-bottom:4px">Your message</div><div style="font-size:13px;color:${BRAND.muted};white-space:pre-wrap">${orig.replace(/</g, "&lt;")}</div></div>`
+      : "";
     return {
       email: {
         subject: `Re: your message — ${cfg.propertyName || "your stay"}`,
         html: emailShell(
           `A note from ${cfg.hostName || "your host"}`,
-          `<p style="margin:0 0 14px;line-height:1.6">Hi ${d.guestName || "there"},</p><p style="margin:0 0 14px;line-height:1.7;white-space:pre-wrap">${(d.reply || "").replace(/</g, "&lt;")}</p><p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">${r}</p>`,
+          `<p style="margin:0 0 14px;line-height:1.6">Hi ${d.guestName || "there"},</p><p style="margin:0 0 14px;line-height:1.7;white-space:pre-wrap">${(d.reply || "").replace(/</g, "&lt;")}</p><p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">${r}</p>${quotedHtml}`,
           cfg
         ),
-        text: `Hi ${d.guestName || "there"},\n\n${d.reply}\n\n${r}`,
+        text: `Hi ${d.guestName || "there"},\n\n${d.reply}\n\n${r}${orig ? `\n\n———\nYour message: "${orig}"` : ""}`,
       },
-      sms: `${cfg.hostName || "Host"}: ${d.reply}\n\n${r}`,
+      sms: `${cfg.hostName || "Host"}: ${d.reply}${orig ? `\n(re: "${orig.slice(0, 60)}${orig.length > 60 ? "…" : ""}")` : ""}\n\n${r}`,
     };
   }
   if (kind === "confirmed") {

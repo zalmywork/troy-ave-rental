@@ -470,13 +470,22 @@ function App() {
   };
   const rmExpense = (id)=>sExpenses(expenses.filter(e=>e.id!==id));
 
-  // reply to a guest message — emails AND texts the guest your answer
+  // Build a display thread from any message (back-compat for old single-reply ones).
+  const threadOf = (m)=> m.thread || [
+    {role:"guest", text:m.message, at:m.createdAt},
+    ...(m.reply?[{role:"host", text:m.reply, at:m.answeredAt}]:[]),
+  ];
+  // reply to a guest message — emails AND texts the guest, quoting their last message
   const sendReply = async (m)=>{
     if(!replyText.trim()) return;
     setReplyBusy(true);
+    const existing = threadOf(m);
+    const lastGuest = [...existing].reverse().find(e=>e.role==="guest");
+    const now = new Date().toISOString();
+    const reply = replyText.trim();
     try{
-      await notify("reply",{ guestName:m.guestName, guestEmail:m.guestEmail, guestPhone:m.guestPhone, reply:replyText.trim() });
-      sMessages(messages.map(x=>x.id===m.id?{...x,answered:true,reply:replyText.trim(),answeredAt:new Date().toISOString()}:x));
+      await notify("reply",{ guestName:m.guestName, guestEmail:m.guestEmail, guestPhone:m.guestPhone, reply, originalMessage:(lastGuest?lastGuest.text:m.message) });
+      sMessages(messages.map(x=>x.id===m.id?{...x,answered:true,reply,answeredAt:now,thread:[...existing,{role:"host",text:reply,at:now}]}:x));
       setReplyId(null);setReplyText("");
     }catch(e){ alert("Couldn't send the reply. Try again."); }
     setReplyBusy(false);
@@ -598,11 +607,13 @@ function App() {
   const sendMsg = async ()=>{
     if(!msgText.trim()||!portalBk) return;
     setMsgErr("");
+    const now = new Date().toISOString();
     const data = {
       id:Date.now().toString(), code:portalBk.code, guestName:portalBk.guestName,
       guestEmail:portalBk.guestEmail||"", guestPhone:portalBk.guestPhone||"",
       checkIn:portalBk.checkIn, checkOut:portalBk.checkOut, message:msgText.trim(),
-      createdAt:new Date().toISOString(), answered:false,
+      createdAt:now, answered:false,
+      thread:[{role:"guest", text:msgText.trim(), at:now}],
     };
     try{
       const r = await notify("message", data);
@@ -1135,7 +1146,9 @@ function App() {
             <h3 style={{fontFamily:FH,fontSize:24,fontWeight:600,margin:"0 0 4px"}}>Guest Messages</h3>
             <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Replies are emailed <b>and</b> texted to the guest, signed off from {config.hostName||"you"}.</p>
             {messages.length===0 && <p style={{color:P.muted,fontSize:14,background:P.card,borderRadius:14,padding:24,textAlign:"center",border:`1px solid ${P.borderLt}`}}>No guest messages yet.</p>}
-            {[...messages].sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")).map(m=>(
+            {[...messages].sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")).map(m=>{
+              const thread = threadOf(m);
+              return (
               <div key={m.id} style={{background:P.card,borderRadius:16,padding:20,marginBottom:12,border:`1px solid ${P.borderLt}`}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                   <span style={{fontWeight:700,fontSize:15}}>{m.guestName||"Guest"} {m.code&&<span style={{fontSize:12,color:P.muted,fontWeight:500}}>· {m.code}</span>}</span>
@@ -1143,13 +1156,21 @@ function App() {
                     ? <span style={{fontSize:12,background:P.okLt,color:P.ok,padding:"2px 10px",borderRadius:999,fontWeight:700}}>Replied</span>
                     : <span style={{fontSize:12,background:P.accentLt,color:P.accentDk,padding:"2px 10px",borderRadius:999,fontWeight:700}}>Awaiting reply</span>}
                 </div>
-                <div style={{fontSize:12.5,color:P.muted,marginBottom:8}}>{m.guestEmail?`📧 ${m.guestEmail}`:""}{m.guestEmail&&m.guestPhone?"  ·  ":""}{m.guestPhone?`📞 ${m.guestPhone}`:""}{m.createdAt?`  ·  ${new Date(m.createdAt).toLocaleString()}`:""}</div>
-                <div style={{fontSize:15,lineHeight:1.6,background:P.surface,borderRadius:12,padding:"12px 14px",whiteSpace:"pre-wrap"}}>{m.message}</div>
-                {m.answered ? (
-                  <div style={{marginTop:10,fontSize:14,color:P.text}}><span style={{color:P.muted,fontSize:12,fontWeight:600}}>YOUR REPLY</span><div style={{whiteSpace:"pre-wrap",marginTop:2}}>{m.reply}</div></div>
-                ) : replyId===m.id ? (
+                <div style={{fontSize:12.5,color:P.muted,marginBottom:10}}>{m.guestEmail?`📧 ${m.guestEmail}`:""}{m.guestEmail&&m.guestPhone?"  ·  ":""}{m.guestPhone?`📞 ${m.guestPhone}`:""}</div>
+                {/* conversation thread */}
+                <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                  {thread.map((e,i)=>(
+                    <div key={i} style={{display:"flex",justifyContent:e.role==="host"?"flex-end":"flex-start"}}>
+                      <div style={{maxWidth:"82%",background:e.role==="host"?P.accentLt:P.surface,borderRadius:13,padding:"10px 13px"}}>
+                        <div style={{fontSize:10.5,letterSpacing:.4,textTransform:"uppercase",fontWeight:700,color:e.role==="host"?P.accentDk:P.muted,marginBottom:3}}>{e.role==="host"?(config.hostName||"You"):(m.guestName||"Guest")}{e.at?` · ${new Date(e.at).toLocaleString([], {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}`:""}</div>
+                        <div style={{fontSize:14,lineHeight:1.5,whiteSpace:"pre-wrap"}}>{e.text}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {replyId===m.id ? (
                   <div style={{marginTop:12}}>
-                    <Inp value={replyText} onChange={setReplyText} multi placeholder={`Reply to ${m.guestName||"the guest"}…`} />
+                    <Inp value={replyText} onChange={setReplyText} multi placeholder={`Reply to ${m.guestName||"the guest"}… (they'll see your message above quoted)`} />
                     <div style={{display:"flex",gap:8,marginTop:6}}>
                       <Btn small disabled={!replyText.trim()||replyBusy} onClick={()=>sendReply(m)}>{replyBusy?"Sending…":"Send reply (email + text)"}</Btn>
                       <Btn v="ghost" small onClick={()=>{setReplyId(null);setReplyText("");}}>Cancel</Btn>
@@ -1158,12 +1179,13 @@ function App() {
                   </div>
                 ) : (
                   <div style={{marginTop:12,display:"flex",gap:8}}>
-                    <Btn small onClick={()=>{setReplyId(m.id);setReplyText("");}}>Reply</Btn>
+                    <Btn small onClick={()=>{setReplyId(m.id);setReplyText("");}}>{m.answered?"Reply again":"Reply"}</Btn>
                     <Btn v="ghost" small onClick={()=>rmMessage(m.id)}>Dismiss</Btn>
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
