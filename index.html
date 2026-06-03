@@ -501,7 +501,7 @@ function App() {
   const saveBk = ()=>{
     if(!bf.checkIn||!bf.checkOut) return;
     const isNew = !editId;
-    const fresh = {...bf,id:Date.now().toString(),code:genCode()};
+    const fresh = {...bf,id:Date.now().toString(),code:genCode(),notifiedAt:new Date().toISOString()};
     const updated = editId
       ? bookings.map(b=>b.id===editId?{...bf,id:editId,code:b.code||bf.code||genCode()}:b)
       : [...bookings,fresh];
@@ -510,7 +510,7 @@ function App() {
   };
   // Re-send (or send) the confirmation: guest email/SMS + cleaner email/SMS.
   const confirmBk = (b)=>{
-    sBookings(bookings.map(x=>x.id===b.id?{...x,status:"confirmed"}:x));
+    sBookings(bookings.map(x=>x.id===b.id?{...x,status:"confirmed",notifiedAt:new Date().toISOString()}:x));
     notify("confirmed", {...b,status:"confirmed"});
   };
   const delBk = (id)=>{sBookings(bookings.filter(b=>b.id!==id));setBkOpen(false);setEditId(null);};
@@ -974,9 +974,16 @@ function App() {
                   </div>
                 </div>
                 <div style={{fontSize:13,color:P.muted}}>{fmtNice(b.checkIn)} → {fmtNice(b.checkOut)} · {daysBetween(parseD(b.checkIn),parseD(b.checkOut))} nights {b.totalPrice?`· ${money(b.totalPrice)}`:""}</div>
+                {(b.guestEmail||b.guestPhone) && <div style={{fontSize:12.5,color:P.muted,marginTop:5}}>{b.guestEmail?`📧 ${b.guestEmail}`:""}{b.guestEmail&&b.guestPhone?"  ·  ":""}{b.guestPhone?`📞 ${b.guestPhone}`:""}</div>}
                 {b.code && <div style={{fontSize:12,marginTop:6,fontWeight:600,letterSpacing:.5}}>🔑 Code: <span style={{fontFamily:FD,background:P.cleanLt,padding:"2px 8px",borderRadius:6}}>{b.code}</span> <span style={{color:P.faint,fontWeight:400}}>· share with guest</span></div>}
-                <div style={{marginTop:12,display:"flex",gap:8}} onClick={e=>e.stopPropagation()}>
-                  <Btn v="outline" small onClick={()=>{ if(confirm(`Send confirmation to ${b.guestName||"the guest"}${b.guestEmail?` (${b.guestEmail})`:""} and notify the cleaner?`)) confirmBk(b); }}>✓ Confirm &amp; notify guest</Btn>
+                <div style={{marginTop:12,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}} onClick={e=>e.stopPropagation()}>
+                  {b.notifiedAt
+                    ? <>
+                        <span style={{fontSize:13,color:P.ok,fontWeight:700}}>✓ Notified {new Date(b.notifiedAt).toLocaleDateString()}</span>
+                        <Btn v="ghost" small onClick={()=>{ if(confirm("Resend the confirmation to the guest and cleaner?")) confirmBk(b); }}>Resend</Btn>
+                      </>
+                    : <Btn v="outline" small onClick={()=>{ if(confirm(`Send confirmation${b.guestEmail?` to ${b.guestEmail}`:""} and notify the cleaner?`)) confirmBk(b); }}>✓ Confirm &amp; notify guest</Btn>}
+                  {!b.guestEmail && <span style={{fontSize:12,color:P.accentDk,fontWeight:600}}>⚠ No guest email — they won't get a confirmation</span>}
                 </div>
               </div>
             ))}
