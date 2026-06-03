@@ -116,7 +116,14 @@ function buildCustomer(kind, d, cfg) {
         ),
         text: `Hi ${d.guestName || "there"}, your booking at ${cfg.propertyName} is CONFIRMED for ${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}. ${sign}`,
       },
-      sms: `Hi ${d.guestName || "there"}, your booking at ${cfg.propertyName || "your stay"} is CONFIRMED for ${niceDate(d.checkIn)}–${niceDate(d.checkOut)}. Check-in ${cfg.checkInTime || "TBD"}, check-out ${cfg.checkOutTime || "TBD"}. ${sign}`,
+      sms: [
+        `Hi ${d.guestName || "there"}, you're CONFIRMED at ${cfg.propertyName || "your stay"} 🎉`,
+        `Check-in: ${niceDate(d.checkIn)}${cfg.checkInTime ? ` · ${cfg.checkInTime}` : ""}`,
+        `Check-out: ${niceDate(d.checkOut)}${cfg.checkOutTime ? ` · ${cfg.checkOutTime}` : ""}`,
+        `${d.nights || nightsBetween(d.checkIn, d.checkOut)} night${(d.nights || nightsBetween(d.checkIn, d.checkOut)) !== 1 ? "s" : ""}${d.totalPrice ? ` · ${money(d.totalPrice)}` : ""}`,
+        d.code ? `Booking code: ${d.code}` : null,
+        sign,
+      ].filter(Boolean).join("\n"),
     };
   }
   return null;

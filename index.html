@@ -36,18 +36,19 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DAYS_HDR = ["S","M","T","W","T","F","S"];
 
+const DEFAULT_PHOTOS = [
+  "/photos/01-kitchen.jpg",
+  "/photos/02-living-dining.jpg",
+  "/photos/03-bedroom-queen.png",
+  "/photos/04-bedroom-twin-green.png",
+  "/photos/05-bedroom-twin-rattan.png",
+  "/photos/06-bathroom.png",
+];
 const defaultConfig = {
   propertyName: "Your Rental Property",
   address: "",
   description: "",
-  photos: [
-    "/photos/01-kitchen.jpg",
-    "/photos/02-living-dining.jpg",
-    "/photos/03-bedroom-queen.png",
-    "/photos/04-bedroom-twin-green.png",
-    "/photos/05-bedroom-twin-rattan.png",
-    "/photos/06-bathroom.png",
-  ],
+  photos: DEFAULT_PHOTOS,
   checkInTime: "15:00",
   checkOutTime: "11:00",
   defaultNightlyRate: 0,
@@ -61,6 +62,13 @@ const defaultConfig = {
   adminPhone: "",
   cleanerEmail: "",
   cleanerPhone: "",
+};
+// Merge stored/synced config over defaults; fall back to the baked-in photos
+// if the saved config has none (so the gallery never shows empty on the live site).
+const withDefaults = (c) => {
+  const m = {...defaultConfig, ...(c||{})};
+  if (!Array.isArray(m.photos) || m.photos.length === 0) m.photos = DEFAULT_PHOTOS;
+  return m;
 };
 
 // Length-of-stay discounts (longest threshold first). Applied automatically to
@@ -363,7 +371,7 @@ function App() {
   const [pin, setPin] = useState("");
   const [pinErr, setPinErr] = useState("");
 
-  const [config, setConfig] = useState(()=>({...defaultConfig,...load("config",{})}));
+  const [config, setConfig] = useState(()=>withDefaults(load("config",{})));
   const [bookings, setBookings] = useState(()=>load("bookings",[]));
   const [pricing, setPricing] = useState(()=>load("pricing",{}));
   const [requests, setRequests] = useState(()=>load("requests",[]));
@@ -421,7 +429,7 @@ function App() {
     let alive = true;
     remoteLoadAll().then(d=>{
       if(!alive || !d) return;
-      if(d.config)   { const c={...defaultConfig,...d.config}; setConfig(c); save("config",c); }
+      if(d.config)   { const c=withDefaults(d.config); setConfig(c); save("config",c); }
       if(d.bookings) { setBookings(d.bookings); save("bookings",d.bookings); }
       if(d.pricing)  { setPricing(d.pricing);  save("pricing",d.pricing); }
       if(d.requests) { setRequests(d.requests); save("requests",d.requests); }
@@ -645,8 +653,9 @@ function App() {
         <div style={{borderBottom:`1px solid ${P.borderLt}`,position:"sticky",top:0,background:"rgba(251,248,244,.85)",backdropFilter:"blur(10px)",zIndex:50}}>
           <div style={{maxWidth:1040,margin:"0 auto",padding:"16px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
-              <span style={{width:30,height:30,borderRadius:9,background:P.accent,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:FH,fontWeight:600,fontSize:17}}>{(config.propertyName||"S").trim().charAt(0).toUpperCase()}</span>
-              <span style={{fontFamily:FH,fontWeight:600,fontSize:19,letterSpacing:-.2,color:P.text}}>{isMobile&&config.propertyName&&config.propertyName!=="Your Rental Property"?config.propertyName:"The Stay"}</span>
+              {config.propertyName && config.propertyName!=="Your Rental Property"
+                ? <span style={{fontFamily:FH,fontWeight:600,fontSize:19,letterSpacing:-.2,color:P.text}}>{config.propertyName}</span>
+                : <span/>}
             </div>
             <span style={{fontSize:12,letterSpacing:1.5,textTransform:"uppercase",color:P.muted,fontWeight:600}}>Vacation Rental</span>
           </div>
@@ -675,15 +684,15 @@ function App() {
 
             {config.description && <p style={{fontSize:16,lineHeight:1.7,color:P.text,marginBottom:24,paddingBottom:24,borderBottom:`1px solid ${P.borderLt}`,whiteSpace:"pre-wrap"}}>{config.description}</p>}
 
-            {/* check in/out */}
+            {/* check in/out — informational, not selectable */}
             {(config.checkInTime||config.checkOutTime) && (
-              <div style={{display:"flex",gap:14,marginBottom:24,paddingBottom:24,borderBottom:`1px solid ${P.borderLt}`}}>
-                {config.checkInTime && <div style={{flex:1,border:`1px solid ${P.border}`,borderRadius:12,padding:"14px 16px"}}>
-                  <div style={{fontSize:13,color:P.muted,marginBottom:4}}>Check-in</div>
+              <div style={{display:"flex",gap:40,marginBottom:24,paddingBottom:24,borderBottom:`1px solid ${P.borderLt}`}}>
+                {config.checkInTime && <div>
+                  <div style={{fontSize:12,letterSpacing:.6,textTransform:"uppercase",color:P.muted,fontWeight:600,marginBottom:4}}>Check-in</div>
                   <div style={{fontSize:18,fontWeight:700}}>{config.checkInTime}</div>
                 </div>}
-                {config.checkOutTime && <div style={{flex:1,border:`1px solid ${P.border}`,borderRadius:12,padding:"14px 16px"}}>
-                  <div style={{fontSize:13,color:P.muted,marginBottom:4}}>Checkout</div>
+                {config.checkOutTime && <div>
+                  <div style={{fontSize:12,letterSpacing:.6,textTransform:"uppercase",color:P.muted,fontWeight:600,marginBottom:4}}>Checkout</div>
                   <div style={{fontSize:18,fontWeight:700}}>{config.checkOutTime}</div>
                 </div>}
               </div>
