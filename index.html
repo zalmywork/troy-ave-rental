@@ -114,36 +114,30 @@ async function remoteLoadAll() {
     return await r.json();
   } catch { return null; }
 }
-// Write one key back to the Sheet (fire-and-forget; localStorage already holds it).
-function remoteSave(key, val) {
-  try {
-    fetch("/api/sheet", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ action:"set", key, value: val }),
-    }).catch(e=>console.error("remoteSave",e));
-  } catch(e) { console.error(e); }
+// Remote writes are SERIALIZED through one queue. The backend does a
+// read-modify-write of the whole sheet per POST, so two concurrent writes
+// (e.g. add booking + remove request when confirming) would clobber each other.
+// Chaining them guarantees each write sees the previous one's result.
+let _writeChain = Promise.resolve();
+let _pendingWrites = 0;
+function _enqueueWrite(body) {
+  _pendingWrites++;
+  _writeChain = _writeChain.then(async () => {
+    try {
+      await fetch("/api/sheet", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch(e) { console.error("remoteWrite", e); }
+    finally { _pendingWrites--; }
+  });
+  return _writeChain;
 }
-// Guests submit a booking request straight to the Sheet (public, no admin token).
-function remoteAddRequest(request) {
-  try {
-    fetch("/api/sheet", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ action:"addRequest", request }),
-    }).catch(e=>console.error("remoteAddRequest",e));
-  } catch(e) { console.error(e); }
-}
-// Guests send a portal message straight to the Sheet (public, server-side append).
-function remoteAddMessage(message) {
-  try {
-    fetch("/api/sheet", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ action:"addMessage", message }),
-    }).catch(e=>console.error("remoteAddMessage",e));
-  } catch(e) { console.error(e); }
-}
+function remoteHasPending() { return _pendingWrites > 0; }
+function remoteSave(key, val) { _enqueueWrite({ action:"set", key, value: val }); }
+function remoteAddRequest(request) { _enqueueWrite({ action:"addRequest", request }); }
+function remoteAddMessage(message) { _enqueueWrite({ action:"addMessage", message }); }
 // Fire-and-forget notification (email/SMS to host or cleaner). Recipients are
 // resolved server-side from the Sheet config; we only send {kind, data}.
 function notify(kind, data) {
@@ -440,21 +434,30 @@ function App() {
   const sExpenses = (x)=>{setExpenses(x);save("expenses",x);remoteSave("expenses",x);};
   const sMessages = (x)=>{setMessages(x);save("messages",x);remoteSave("messages",x);};
 
-  // Hydrate from the Sheet on first load so every device sees the same data.
+  // Live sync with the Sheet: on load, every 25s, and on window focus — so a
+  // booking/request/message created on another device (or by a guest) shows up
+  // without a manual refresh. Skips while local writes are still flushing so it
+  // never overwrites un-saved changes.
   const [synced, setSynced] = useState(false);
-  useEffect(()=>{
-    let alive = true;
+  const syncFromSheet = useCallback((mark)=>{
+    if(remoteHasPending()) return;
     remoteLoadAll().then(d=>{
-      if(!alive || !d) return;
+      if(!d) return;
       if(d.config)   { const c=withDefaults(d.config); setConfig(c); save("config",c); }
       if(d.bookings) { setBookings(d.bookings); save("bookings",d.bookings); }
       if(d.pricing)  { setPricing(d.pricing);  save("pricing",d.pricing); }
       if(d.requests) { setRequests(d.requests); save("requests",d.requests); }
       if(d.expenses) { setExpenses(d.expenses); save("expenses",d.expenses); }
       if(d.messages) { setMessages(d.messages); save("messages",d.messages); }
-    }).finally(()=>{ if(alive) setSynced(true); });
-    return ()=>{ alive=false; };
+    }).finally(()=>{ if(mark) setSynced(true); });
   },[]);
+  useEffect(()=>{
+    syncFromSheet(true);
+    const iv = setInterval(()=>syncFromSheet(false), 25000);
+    const onFocus = ()=>syncFromSheet(false);
+    window.addEventListener("focus", onFocus);
+    return ()=>{ clearInterval(iv); window.removeEventListener("focus", onFocus); };
+  },[syncFromSheet]);
 
   const prevMo = ()=>{if(mo===0){setMo(11);setYr(y=>y-1);}else setMo(m=>m-1);};
   const nextMo = ()=>{if(mo===11){setMo(0);setYr(y=>y+1);}else setMo(m=>m+1);};
@@ -951,7 +954,10 @@ function App() {
       <div style={{background:P.accent,padding:20}}>
         <div style={{maxWidth:840,margin:"0 auto",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div><h1 style={{fontFamily:FD,fontSize:22,fontWeight:700,margin:0,color:"#fff"}}>Admin Dashboard</h1><p style={{fontSize:12,color:"rgba(255,255,255,.85)",margin:"4px 0 0"}}>{config.propertyName}</p></div>
-          <Btn v="outline" small onClick={()=>setView("guest")} sx={{background:"#fff"}}>← View Site</Btn>
+          <div style={{display:"flex",gap:8}}>
+            <Btn v="outline" small onClick={()=>syncFromSheet(false)} sx={{background:"#fff"}}>↻ Refresh</Btn>
+            <Btn v="outline" small onClick={()=>setView("guest")} sx={{background:"#fff"}}>← View Site</Btn>
+          </div>
         </div>
       </div>
 
