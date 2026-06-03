@@ -5,19 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rental Manager</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #FFFFFF; font-family: 'DM Sans', 'Helvetica Neue', sans-serif; color: #222222; -webkit-font-smoothing: antialiased; }
+  body { background: #FBF8F4; font-family: 'Plus Jakarta Sans', 'Helvetica Neue', sans-serif; color: #2C2622; -webkit-font-smoothing: antialiased; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-  @keyframes popIn { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+  @keyframes popIn { from { opacity: 0; transform: scale(.96) translateY(6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
   input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
-  ::-webkit-scrollbar { width: 8px; height: 8px; }
-  ::-webkit-scrollbar-thumb { background: #DDDDDD; border-radius: 4px; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #DCCFBF; border-radius: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   .gcell:hover { transform: scale(1.04); }
   .photo-zoom { transition: transform .5s cubic-bezier(.2,.8,.2,1); }
@@ -54,6 +56,7 @@ const defaultConfig = {
   guestGuide: "",
   adminPin: "1234",
   cleaningPin: "0000",
+  hostName: "Ari",
   adminEmail: "",
   adminPhone: "",
   cleanerEmail: "",
@@ -149,28 +152,29 @@ function useIsMobile(bp=820){
   return m;
 }
 
-/* ── palette (Airbnb-inspired) ── */
+/* ── palette (warm minimalist) ── */
 const P = {
-  bg:"#FFFFFF", card:"#FFFFFF", text:"#222222", muted:"#717171", faint:"#B0B0B0",
-  accent:"#FF385C", accentDk:"#E00B41", accentLt:"#FFF0F3",
-  border:"#DDDDDD", borderLt:"#EBEBEB",
-  reserved:"#B0B0B0", reservedLt:"#F4F4F4",
-  ok:"#008A05", okLt:"#E7F5E8",
-  surface:"#F7F7F7", overlay:"rgba(0,0,0,0.85)",
-  clean:"#222222", cleanLt:"#F2F2F2",
+  bg:"#FBF8F4", card:"#FFFFFF", text:"#2C2622", muted:"#7A7167", faint:"#B8AFA4",
+  accent:"#B0744A", accentDk:"#925C36", accentLt:"#F3E9DF",
+  border:"#E4DBCF", borderLt:"#ECE5DC",
+  reserved:"#B8AFA4", reservedLt:"#F2ECE4",
+  ok:"#5E7355", okLt:"#E9EFE4",
+  surface:"#F4EEE6", overlay:"rgba(34,28,24,0.82)",
+  clean:"#2C2622", cleanLt:"#F2ECE4",
 };
-const F = "'DM Sans','Helvetica Neue',sans-serif";
-const FD = "'DM Sans','Helvetica Neue',sans-serif";
+const F = "'Plus Jakarta Sans','Helvetica Neue',sans-serif";   // body / UI
+const FD = "'Plus Jakarta Sans','Helvetica Neue',sans-serif";  // sub-headings
+const FH = "'Fraunces','Georgia',serif";                        // display / hero
 
 /* ── Modal ── */
 function Modal({ open, onClose, title, children, wide }) {
   if (!open) return null;
   return (
-    <div style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.45)",animation:"fadeIn .15s ease"}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} style={{background:P.card,borderRadius:16,padding:32,maxWidth:wide?720:480,width:"92%",maxHeight:"85vh",overflow:"auto",boxShadow:"0 24px 80px rgba(0,0,0,0.25)",animation:"popIn .18s ease"}}>
+    <div style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",background:P.overlay,backdropFilter:"blur(3px)",animation:"fadeIn .15s ease"}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:P.card,borderRadius:22,padding:32,maxWidth:wide?720:480,width:"92%",maxHeight:"85vh",overflow:"auto",boxShadow:"0 30px 90px rgba(44,38,34,0.28)",animation:"popIn .2s ease",border:`1px solid ${P.borderLt}`}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-          <h3 style={{fontFamily:FD,fontSize:22,fontWeight:700,margin:0,color:P.text}}>{title}</h3>
-          <button onClick={onClose} style={{background:P.surface,border:"none",width:32,height:32,borderRadius:"50%",fontSize:18,cursor:"pointer",color:P.text}}>×</button>
+          <h3 style={{fontFamily:FH,fontSize:25,fontWeight:600,margin:0,color:P.text,letterSpacing:-.3}}>{title}</h3>
+          <button onClick={onClose} style={{background:P.surface,border:"none",width:34,height:34,borderRadius:"50%",fontSize:18,cursor:"pointer",color:P.text,flexShrink:0}}>×</button>
         </div>
         {children}
       </div>
@@ -180,13 +184,13 @@ function Modal({ open, onClose, title, children, wide }) {
 
 /* ── Input ── */
 function Inp({ label, value, onChange, type="text", placeholder, multi, sx }) {
-  const base = {fontFamily:F,fontSize:15,padding:"12px 14px",border:`1px solid ${P.border}`,borderRadius:10,background:P.card,color:P.text,width:"100%",boxSizing:"border-box",outline:"none",transition:"border .2s, box-shadow .2s",...sx};
+  const base = {fontFamily:F,fontSize:15,padding:"13px 15px",border:`1px solid ${P.border}`,borderRadius:13,background:P.card,color:P.text,width:"100%",boxSizing:"border-box",outline:"none",transition:"border .2s, box-shadow .2s",...sx};
   return (
     <label style={{display:"block",marginBottom:14}}>
       {label && <span style={{fontSize:13,fontWeight:600,color:P.text,display:"block",marginBottom:6,fontFamily:F}}>{label}</span>}
       {multi
-        ? <textarea value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={4} style={{...base,resize:"vertical"}} onFocus={e=>{e.target.style.borderColor=P.text;e.target.style.boxShadow="0 0 0 1px "+P.text}} onBlur={e=>{e.target.style.borderColor=P.border;e.target.style.boxShadow="none"}} />
-        : <input type={type} value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={base} onFocus={e=>{e.target.style.borderColor=P.text;e.target.style.boxShadow="0 0 0 1px "+P.text}} onBlur={e=>{e.target.style.borderColor=P.border;e.target.style.boxShadow="none"}} />
+        ? <textarea value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={4} style={{...base,resize:"vertical"}} onFocus={e=>{e.target.style.borderColor=P.accent;e.target.style.boxShadow="0 0 0 3px "+P.accentLt}} onBlur={e=>{e.target.style.borderColor=P.border;e.target.style.boxShadow="none"}} />
+        : <input type={type} value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={base} onFocus={e=>{e.target.style.borderColor=P.accent;e.target.style.boxShadow="0 0 0 3px "+P.accentLt}} onBlur={e=>{e.target.style.borderColor=P.border;e.target.style.boxShadow="none"}} />
       }
     </label>
   );
@@ -196,18 +200,18 @@ function Inp({ label, value, onChange, type="text", placeholder, multi, sx }) {
 function Btn({ children, onClick, v="primary", small, sx, disabled }) {
   const map = {
     primary:{background:P.accent,color:"#fff",border:"none"},
-    gradient:{background:"linear-gradient(to right, #E61E4D 0%, #E31C5F 50%, #D70466 100%)",color:"#fff",border:"none"},
+    gradient:{background:"linear-gradient(135deg, #C2895C 0%, #B0744A 50%, #95592F 100%)",color:"#fff",border:"none"},
     dark:{background:P.text,color:"#fff",border:"none"},
     secondary:{background:P.card,color:P.text,border:`1px solid ${P.text}`},
     outline:{background:P.card,color:P.text,border:`1px solid ${P.border}`},
     ghost:{background:"transparent",color:P.text,border:"none",textDecoration:"underline"},
-    danger:{background:"#D93900",color:"#fff",border:"none"},
+    danger:{background:"#B5462E",color:"#fff",border:"none"},
     clean:{background:P.clean,color:"#fff",border:"none"},
   };
   return <button disabled={disabled} onClick={onClick}
-    onMouseEnter={e=>{e.currentTarget.style.filter="brightness(.94)";e.currentTarget.style.transform="translateY(-1px)";}}
-    onMouseLeave={e=>{e.currentTarget.style.filter="none";e.currentTarget.style.transform="none";}}
-    style={{fontFamily:F,fontSize:small?14:15,fontWeight:600,padding:small?"8px 16px":"13px 24px",borderRadius:10,cursor:disabled?"not-allowed":"pointer",opacity:disabled?.5:1,transition:"all .18s ease",...map[v],...sx}}>{children}</button>;
+    onMouseEnter={e=>{e.currentTarget.style.filter="brightness(.96)";e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 6px 18px rgba(44,38,34,.12)";}}
+    onMouseLeave={e=>{e.currentTarget.style.filter="none";e.currentTarget.style.transform="none";e.currentTarget.style.boxShadow="none";}}
+    style={{fontFamily:F,fontSize:small?14:15,fontWeight:600,letterSpacing:.2,padding:small?"9px 18px":"14px 26px",borderRadius:999,cursor:disabled?"not-allowed":"pointer",opacity:disabled?.5:1,transition:"all .18s ease",...map[v],...sx}}>{children}</button>;
 }
 
 /* ── Photo Gallery (Airbnb hero grid) ── */
@@ -240,14 +244,14 @@ function Gallery({photos,onOpen,isMobile}){
     grid = <div style={{...wrap,gridTemplateColumns:"1fr 1fr"}}>{photos.slice(0,2).map((p,i)=><Tile key={i} src={p} idx={i} onOpen={onOpen}/>)}</div>;
   } else if(n===3){
     grid = <div style={{...wrap,gridTemplateColumns:"1.6fr 1fr",gridTemplateRows:"1fr 1fr"}}>
-      <div style={{gridRow:"1 / 3"}}><Tile src={photos[0]} idx={0} onOpen={onOpen}/></div>
+      <div style={{gridRow:"1 / 3",display:"grid"}}><Tile src={photos[0]} idx={0} onOpen={onOpen}/></div>
       <Tile src={photos[1]} idx={1} onOpen={onOpen}/>
       <Tile src={photos[2]} idx={2} onOpen={onOpen}/>
     </div>;
   } else {
     const five = photos.slice(0,5);
     grid = <div style={{...wrap,gridTemplateColumns:"2fr 1fr 1fr",gridTemplateRows:"1fr 1fr"}}>
-      <div style={{gridRow:"1 / 3"}}><Tile src={five[0]} idx={0} onOpen={onOpen}/></div>
+      <div style={{gridRow:"1 / 3",display:"grid"}}><Tile src={five[0]} idx={0} onOpen={onOpen}/></div>
       <Tile src={five[1]} idx={1} onOpen={onOpen}/>
       <Tile src={five[2]} idx={2} onOpen={onOpen}/>
       <Tile src={five[3]} idx={3} onOpen={onOpen}/>
@@ -363,6 +367,7 @@ function App() {
   const [bookings, setBookings] = useState(()=>load("bookings",[]));
   const [pricing, setPricing] = useState(()=>load("pricing",{}));
   const [requests, setRequests] = useState(()=>load("requests",[]));
+  const [expenses, setExpenses] = useState(()=>load("expenses",[]));
 
   const [mo, setMo] = useState(new Date().getMonth());
   const [yr, setYr] = useState(new Date().getFullYear());
@@ -397,12 +402,18 @@ function App() {
   const [pe, setPe] = useState("");
   const [pa, setPa] = useState("");
   const [photoUrl, setPhotoUrl] = useState("");
+  // expense entry (metrics tab)
+  const [exDate, setExDate] = useState("");
+  const [exCat, setExCat] = useState("Cleaning");
+  const [exAmt, setExAmt] = useState("");
+  const [exNote, setExNote] = useState("");
 
   // save wrappers — update React state, the local cache, and the shared Sheet
   const sConfig = (c)=>{setConfig(c);save("config",c);remoteSave("config",c);};
   const sBookings = (b)=>{setBookings(b);save("bookings",b);remoteSave("bookings",b);};
   const sPricing = (p)=>{setPricing(p);save("pricing",p);remoteSave("pricing",p);};
   const sRequests = (r)=>{setRequests(r);save("requests",r);remoteSave("requests",r);};
+  const sExpenses = (x)=>{setExpenses(x);save("expenses",x);remoteSave("expenses",x);};
 
   // Hydrate from the Sheet on first load so every device sees the same data.
   const [synced, setSynced] = useState(false);
@@ -414,12 +425,45 @@ function App() {
       if(d.bookings) { setBookings(d.bookings); save("bookings",d.bookings); }
       if(d.pricing)  { setPricing(d.pricing);  save("pricing",d.pricing); }
       if(d.requests) { setRequests(d.requests); save("requests",d.requests); }
+      if(d.expenses) { setExpenses(d.expenses); save("expenses",d.expenses); }
     }).finally(()=>{ if(alive) setSynced(true); });
     return ()=>{ alive=false; };
   },[]);
 
   const prevMo = ()=>{if(mo===0){setMo(11);setYr(y=>y-1);}else setMo(m=>m-1);};
   const nextMo = ()=>{if(mo===11){setMo(0);setYr(y=>y+1);}else setMo(m=>m+1);};
+
+  // ── metrics / P&L ──
+  const addExpense = ()=>{
+    if(!exAmt||!exDate) return;
+    sExpenses([...expenses,{id:Date.now().toString(),date:exDate,category:exCat,amount:Number(exAmt)||0,note:exNote}]);
+    setExDate("");setExAmt("");setExNote("");setExCat("Cleaning");
+  };
+  const rmExpense = (id)=>sExpenses(expenses.filter(e=>e.id!==id));
+  const metrics = useMemo(()=>{
+    const byMonth = {}; // "2026-06" -> {nights, rev}
+    let totalNights=0, totalRev=0;
+    bookings.forEach(b=>{
+      if(!b.checkIn||!b.checkOut) return;
+      const n = Math.max(0, daysBetween(parseD(b.checkIn),parseD(b.checkOut)));
+      const rev = Number(b.totalPrice)||0;
+      totalNights+=n; totalRev+=rev;
+      const k = b.checkIn.slice(0,7);
+      (byMonth[k] = byMonth[k]||{nights:0,rev:0});
+      byMonth[k].nights+=n; byMonth[k].rev+=rev;
+    });
+    const expByCat = {};
+    let totalExp=0;
+    expenses.forEach(e=>{ const a=Number(e.amount)||0; totalExp+=a; expByCat[e.category]=(expByCat[e.category]||0)+a; });
+    const todayS = fmt(new Date());
+    const thisYM = todayS.slice(0,7);
+    const weekAgo = fmt(addDays(new Date(), -7));
+    let weekNights=0;
+    bookings.forEach(b=>{ if(b.checkIn>=weekAgo && b.checkIn<=todayS) weekNights+=Math.max(0,daysBetween(parseD(b.checkIn),parseD(b.checkOut))); });
+    const months = Object.keys(byMonth).sort().reverse();
+    return { byMonth, months, totalNights, totalRev, totalExp, net: totalRev-totalExp,
+             thisMonth: byMonth[thisYM]||{nights:0,rev:0}, weekNights, expByCat };
+  },[bookings,expenses]);
 
   // guest date pick
   const guestClick = (ds)=>{
@@ -454,7 +498,12 @@ function App() {
       ? bookings.map(b=>b.id===editId?{...bf,id:editId,code:b.code||bf.code||genCode()}:b)
       : [...bookings,fresh];
     sBookings(updated);setBkOpen(false);setEditId(null);
-    if(isNew) notify("booking", fresh); // tell the cleaner to add the turnover
+    if(isNew) notify("confirmed", fresh); // confirm guest + alert cleaner
+  };
+  // Re-send (or send) the confirmation: guest email/SMS + cleaner email/SMS.
+  const confirmBk = (b)=>{
+    sBookings(bookings.map(x=>x.id===b.id?{...x,status:"confirmed"}:x));
+    notify("confirmed", {...b,status:"confirmed"});
   };
   const delBk = (id)=>{sBookings(bookings.filter(b=>b.id!==id));setBkOpen(false);setEditId(null);};
 
@@ -469,11 +518,12 @@ function App() {
     const bk = {id:Date.now().toString(),code:genCode(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed"};
     sBookings([...bookings,bk]);
     sRequests(requests.filter(r=>r.id!==req.id));
-    notify("booking", bk); // tell the cleaner to add the turnover
+    notify("confirmed", bk); // confirm the guest + alert the cleaner
   };
 
+  const emailOk = (e)=>/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e||"");
   const submitReq = ()=>{
-    if(!gName||!selA||!selB) return;
+    if(!gName||!emailOk(gEmail)||!selA||!selB) return;
     const req = {id:Date.now().toString(),guestName:gName,guestEmail:gEmail,guestPhone:gPhone,checkIn:selA,checkOut:selB,totalPrice:total,notes:gNotes,createdAt:new Date().toISOString()};
     setRequests(rs=>[...rs,req]); save("requests",[...requests,req]); // local cache
     remoteAddRequest(req); // server-side append — never clobbers other devices' requests
@@ -592,22 +642,22 @@ function App() {
     return (
       <div style={{minHeight:"100vh",background:P.bg}}>
         {/* top bar */}
-        <div style={{borderBottom:`1px solid ${P.borderLt}`,position:"sticky",top:0,background:"rgba(255,255,255,.92)",backdropFilter:"blur(8px)",zIndex:50}}>
-          <div style={{maxWidth:1040,margin:"0 auto",padding:"14px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,color:P.accent,fontWeight:800,fontSize:20,letterSpacing:-.5}}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill={P.accent}><path d="M12 1.5c-1.7 0-3 1.3-3 3 0 .9.7 2.5 1.6 4.2C8.1 9.4 6 11.3 6 14c0 2.2 1.8 4 4 4 .8 0 1.5-.2 2-.6.5.4 1.2.6 2 .6 2.2 0 4-1.8 4-4 0-2.7-2.1-4.6-4.6-5.3C14.3 7 15 5.4 15 4.5c0-1.7-1.3-3-3-3z"/></svg>
-              <span style={{color:P.text}}>{isMobile?"Stays":config.propertyName!=="Your Rental Property"?"":"Stays"}</span>
+        <div style={{borderBottom:`1px solid ${P.borderLt}`,position:"sticky",top:0,background:"rgba(251,248,244,.85)",backdropFilter:"blur(10px)",zIndex:50}}>
+          <div style={{maxWidth:1040,margin:"0 auto",padding:"16px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <span style={{width:30,height:30,borderRadius:9,background:P.accent,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:FH,fontWeight:600,fontSize:17}}>{(config.propertyName||"S").trim().charAt(0).toUpperCase()}</span>
+              <span style={{fontFamily:FH,fontWeight:600,fontSize:19,letterSpacing:-.2,color:P.text}}>{isMobile&&config.propertyName&&config.propertyName!=="Your Rental Property"?config.propertyName:"The Stay"}</span>
             </div>
-            <span style={{fontSize:13,color:P.muted}}>Vacation Rental</span>
+            <span style={{fontSize:12,letterSpacing:1.5,textTransform:"uppercase",color:P.muted,fontWeight:600}}>Vacation Rental</span>
           </div>
         </div>
 
         {/* gallery */}
-        <div style={{maxWidth:1040,margin:"0 auto",padding:isMobile?"0 0 4px":"24px 24px 4px"}}>
+        <div style={{maxWidth:1040,margin:"0 auto",padding:isMobile?"0 0 4px":"32px 24px 6px"}}>
           {!isMobile && (
-            <div style={{marginBottom:16}}>
-              <h1 style={{fontFamily:FD,fontSize:30,fontWeight:700,lineHeight:1.2,letterSpacing:-.5}}>{config.propertyName||"Your Rental Property"}</h1>
-              {config.address && <p style={{fontSize:15,color:P.text,marginTop:6,textDecoration:"underline",fontWeight:500}}>{config.address}</p>}
+            <div style={{marginBottom:20}}>
+              <h1 style={{fontFamily:FH,fontSize:42,fontWeight:600,lineHeight:1.08,letterSpacing:-1}}>{config.propertyName||"Your Rental Property"}</h1>
+              {config.address && <p style={{fontSize:15,color:P.muted,marginTop:8,fontWeight:500}}>{config.address}</p>}
             </div>
           )}
           <Gallery photos={photos} onOpen={(i)=>setLbIndex(i)} isMobile={isMobile} />
@@ -709,10 +759,11 @@ function App() {
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:15,fontWeight:700,borderTop:`1px solid ${P.border}`,paddingTop:8,marginTop:4}}><span>Total</span><span>{money(total)}</span></div>
               </div>
               <Inp label="Full Name *" value={gName} onChange={setGName} placeholder="Jane Smith" />
-              <Inp label="Email" value={gEmail} onChange={setGEmail} type="email" placeholder="jane@email.com" />
-              <Inp label="Phone" value={gPhone} onChange={setGPhone} type="tel" placeholder="+1 (555) 000-0000" />
+              <Inp label="Email *" value={gEmail} onChange={setGEmail} type="email" placeholder="jane@email.com" />
+              <Inp label="Phone (optional — for text updates)" value={gPhone} onChange={setGPhone} type="tel" placeholder="+1 (555) 000-0000" />
               <Inp label="Notes" value={gNotes} onChange={setGNotes} multi placeholder="Any questions or special requests?" />
-              <Btn onClick={submitReq} v="gradient" disabled={!gName} sx={{width:"100%",marginTop:6}}>Submit Request</Btn>
+              <p style={{fontSize:12,color:P.muted,margin:"-4px 0 12px"}}>We'll email you a confirmation. Add a phone number to also get text updates.</p>
+              <Btn onClick={submitReq} v="gradient" disabled={!gName||!emailOk(gEmail)} sx={{width:"100%",marginTop:6}}>Submit Request</Btn>
             </div>
           )}
         </Modal>
@@ -836,6 +887,7 @@ function App() {
     {id:"bookings",label:"Bookings",icon:"📋"},
     {id:"pricing",label:"Pricing",icon:"💲"},
     {id:"requests",label:`Requests${requests.length?` (${requests.length})`:""}`,icon:"📩"},
+    {id:"metrics",label:"Metrics",icon:"📊"},
     {id:"guide",label:"Guide",icon:"🔑"},
     {id:"settings",label:"Settings",icon:"⚙"},
   ];
@@ -914,6 +966,9 @@ function App() {
                 </div>
                 <div style={{fontSize:13,color:P.muted}}>{fmtNice(b.checkIn)} → {fmtNice(b.checkOut)} · {daysBetween(parseD(b.checkIn),parseD(b.checkOut))} nights {b.totalPrice?`· ${money(b.totalPrice)}`:""}</div>
                 {b.code && <div style={{fontSize:12,marginTop:6,fontWeight:600,letterSpacing:.5}}>🔑 Code: <span style={{fontFamily:FD,background:P.cleanLt,padding:"2px 8px",borderRadius:6}}>{b.code}</span> <span style={{color:P.faint,fontWeight:400}}>· share with guest</span></div>}
+                <div style={{marginTop:12,display:"flex",gap:8}} onClick={e=>e.stopPropagation()}>
+                  <Btn v="outline" small onClick={()=>{ if(confirm(`Send confirmation to ${b.guestName||"the guest"}${b.guestEmail?` (${b.guestEmail})`:""} and notify the cleaner?`)) confirmBk(b); }}>✓ Confirm &amp; notify guest</Btn>
+                </div>
               </div>
             ))}
             <Modal open={bkOpen} onClose={()=>{setBkOpen(false);setEditId(null);}} title={editId?"Edit Booking":"New Booking"} wide>
@@ -985,13 +1040,78 @@ function App() {
                 {r.guestPhone && <div style={{fontSize:13,color:P.muted}}>📞 {r.guestPhone}</div>}
                 {r.notes && <div style={{fontSize:13,marginTop:6,fontStyle:"italic"}}>"{r.notes}"</div>}
                 <div style={{display:"flex",gap:8,marginTop:14}}>
-                  <Btn small onClick={()=>acceptReq(r)}>Accept &amp; Book</Btn>
+                  <Btn small onClick={()=>{ if(confirm(`Confirm this booking? This emails/texts ${r.guestName||"the guest"} a confirmation and notifies the cleaner.`)) acceptReq(r); }}>✓ Confirm &amp; Book</Btn>
                   <Btn v="danger" small onClick={()=>sRequests(requests.filter(x=>x.id!==r.id))}>Decline</Btn>
                 </div>
               </div>
             ))}
           </div>
         )}
+
+        {aTab==="metrics" && (() => {
+          const stat = (label,val,accent)=>(
+            <div style={{background:P.card,border:`1px solid ${P.borderLt}`,borderRadius:16,padding:"18px 20px",flex:1,minWidth:140}}>
+              <div style={{fontSize:12,letterSpacing:.6,textTransform:"uppercase",color:P.muted,fontWeight:600,marginBottom:6}}>{label}</div>
+              <div style={{fontFamily:FH,fontSize:26,fontWeight:600,color:accent||P.text}}>{val}</div>
+            </div>
+          );
+          const mLabel = (k)=>{ const [y,m]=k.split("-"); return `${MONTHS[Number(m)-1].slice(0,3)} ${y}`; };
+          return (
+          <div>
+            <h3 style={{fontFamily:FH,fontSize:24,fontWeight:600,margin:"0 0 16px"}}>Metrics &amp; P&amp;L</h3>
+            <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:14}}>
+              {stat("Revenue", money(metrics.totalRev)||"$0")}
+              {stat("Expenses", money(metrics.totalExp)||"$0")}
+              {stat("Net P&L", (metrics.net<0?"−":"")+ (money(Math.abs(metrics.net))||"$0"), metrics.net>=0?P.ok:P.accentDk)}
+              {stat("Nights rented", String(metrics.totalNights))}
+            </div>
+            <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:24}}>
+              {stat("This month — nights", String(metrics.thisMonth.nights))}
+              {stat("This month — revenue", money(metrics.thisMonth.rev)||"$0")}
+              {stat("Last 7 days — nights", String(metrics.weekNights))}
+            </div>
+
+            <div style={{background:P.card,borderRadius:16,padding:24,border:`1px solid ${P.borderLt}`,marginBottom:20}}>
+              <h4 style={{fontFamily:FD,fontSize:16,fontWeight:700,margin:"0 0 12px"}}>By month</h4>
+              {metrics.months.length===0 && <p style={{fontSize:14,color:P.muted,margin:0}}>No bookings yet.</p>}
+              {metrics.months.map(k=>(
+                <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${P.borderLt}`}}>
+                  <span style={{fontWeight:600,fontSize:14}}>{mLabel(k)}</span>
+                  <span style={{fontSize:14,color:P.muted}}>{metrics.byMonth[k].nights} night{metrics.byMonth[k].nights!==1?"s":""} · <span style={{color:P.text,fontWeight:600}}>{money(metrics.byMonth[k].rev)||"$0"}</span></span>
+                </div>
+              ))}
+            </div>
+
+            <div style={{background:P.card,borderRadius:16,padding:24,border:`1px solid ${P.borderLt}`}}>
+              <h4 style={{fontFamily:FD,fontSize:16,fontWeight:700,margin:"0 0 4px"}}>Expenses</h4>
+              <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Log cleaning, repairs, supplies — they're subtracted from revenue for your P&amp;L.</p>
+              <div style={{display:"grid",gridTemplateColumns:"1.1fr 1fr 0.9fr 1.3fr auto",gap:10,alignItems:"end"}}>
+                <Inp label="Date" value={exDate} onChange={setExDate} type="date" sx={{marginBottom:0}} />
+                <label style={{display:"block"}}>
+                  <span style={{fontSize:13,fontWeight:600,display:"block",marginBottom:6}}>Category</span>
+                  <select value={exCat} onChange={e=>setExCat(e.target.value)} style={{fontFamily:F,fontSize:15,padding:"13px 12px",border:`1px solid ${P.border}`,borderRadius:13,background:P.card,color:P.text,width:"100%"}}>
+                    <option>Cleaning</option><option>Repair</option><option>Supplies</option><option>Other</option>
+                  </select>
+                </label>
+                <Inp label="Amount ($)" value={exAmt} onChange={setExAmt} type="number" sx={{marginBottom:0}} />
+                <Inp label="Note" value={exNote} onChange={setExNote} placeholder="e.g. deep clean" sx={{marginBottom:0}} />
+                <Btn onClick={addExpense} v="dark" disabled={!exAmt||!exDate}>Add</Btn>
+              </div>
+              {expenses.length>0 && (
+                <div style={{marginTop:18}}>
+                  {[...expenses].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(e=>(
+                    <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:`1px solid ${P.borderLt}`}}>
+                      <span style={{fontSize:14}}><span style={{fontWeight:600}}>{money(e.amount)}</span> <span style={{color:P.muted}}>· {e.category}{e.note?` · ${e.note}`:""} · {e.date}</span></span>
+                      <button onClick={()=>rmExpense(e.id)} style={{background:"none",border:"none",color:P.accentDk,cursor:"pointer",fontSize:13,fontWeight:600}}>Remove</button>
+                    </div>
+                  ))}
+                  <div style={{marginTop:12,fontSize:13,color:P.muted}}>{Object.entries(metrics.expByCat).map(([c,a])=>`${c}: ${money(a)}`).join("  ·  ")}</div>
+                </div>
+              )}
+            </div>
+          </div>
+          );
+        })()}
 
         {aTab==="guide" && (
           <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
@@ -1007,6 +1127,7 @@ function App() {
               <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 6px"}}>Notifications</h3>
               <p style={{fontSize:13,color:P.muted,margin:"0 0 20px"}}>You'll get a detailed email (and text, if set up) on every booking request and guest message. Your cleaner is notified whenever a booking is confirmed, so they can add the turnover to their calendar.</p>
               <h4 style={{fontSize:14,fontWeight:700,margin:"0 0 10px"}}>🏠 Host</h4>
+              <Inp label="Host name (shown to guests, e.g. in “reach out to Ari”)" value={config.hostName} onChange={v=>sConfig({...config,hostName:v})} placeholder="Ari" />
               <Inp label="Admin email" value={config.adminEmail} onChange={v=>sConfig({...config,adminEmail:v})} type="email" placeholder="you@email.com" />
               <Inp label="Admin phone (for SMS)" value={config.adminPhone} onChange={v=>sConfig({...config,adminPhone:v})} type="tel" placeholder="+1 555 000 0000" />
               <h4 style={{fontSize:14,fontWeight:700,margin:"18px 0 10px"}}>🧹 Cleaner</h4>

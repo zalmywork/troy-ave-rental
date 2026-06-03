@@ -1,95 +1,167 @@
-// Vercel serverless function: notify the host / cleaner about portal events.
+// Vercel serverless function: all guest/host/cleaner notifications.
 //
-// The client only sends { kind, data } — it does NOT choose recipients.
-// Recipient emails/phones are read from the Sheet's config server-side, so this
-// can't be abused as an open email/SMS relay.
+// The client sends only { kind, data } — recipients (admin/cleaner email+phone,
+// host name, property, times) are read from the Sheet config server-side, so
+// this can't be abused as an open relay.
 //
-//   kind "request" -> admin (new booking request)
-//   kind "message" -> admin (guest portal message)
-//   kind "booking" -> cleaner + admin (a booking was confirmed)
+//   kind "request"   -> customer "reservation requested" email + SMS,
+//                       admin alert email + SMS
+//   kind "confirmed" -> customer confirmation email + SMS,
+//                       cleaner email + SMS (with check-in/out date & time),
+//                       admin email notice
+//   kind "message"   -> admin alert email + SMS
 //
 // Email via Resend (RESEND_API_KEY, MAIL_FROM). SMS via Twilio
-// (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM). Each channel is
-// independent and simply skipped if its env vars / target are missing.
+// (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM). Each channel is skipped
+// when its env vars / the target address are missing. NOTE: emailing customers
+// (any address other than your own) requires a verified domain in Resend.
 
 const { openSheet } = require("../lib/google");
 
-async function sendEmail(to, subject, text, replyTo) {
+const BRAND = { bg: "#FBF8F4", card: "#FFFFFF", ink: "#2C2622", muted: "#7A7167", accent: "#B0744A", line: "#ECE5DC" };
+
+/* ---------- senders ---------- */
+async function sendEmail(to, subject, html, text, replyTo) {
   const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey || !to) return { skipped: true };
+  if (!apiKey || !to) return { skipped: "email" };
   const from = process.env.MAIL_FROM || "onboarding@resend.dev";
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to, subject, text, reply_to: replyTo || undefined }),
+    body: JSON.stringify({ from, to, subject, html, text, reply_to: replyTo || undefined }),
   });
   if (!r.ok) return { error: await r.text() };
-  return { ok: true };
+  return { ok: true, channel: "email", to };
 }
-
 async function sendSms(to, body) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const auth = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.TWILIO_FROM;
-  if (!sid || !auth || !from || !to) return { skipped: true };
-  const r = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Basic " + Buffer.from(`${sid}:${auth}`).toString("base64"),
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({ To: to, From: from, Body: body }),
-    }
-  );
+  if (!sid || !auth || !from || !to) return { skipped: "sms" };
+  const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    method: "POST",
+    headers: {
+      Authorization: "Basic " + Buffer.from(`${sid}:${auth}`).toString("base64"),
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ To: to, From: from, Body: body }),
+  });
   if (!r.ok) return { error: await r.text() };
-  return { ok: true };
+  return { ok: true, channel: "sms", to };
 }
 
-function build(kind, d) {
-  const property = d.property || "your rental";
-  const dates = `${d.checkIn || "?"} → ${d.checkOut || "?"}`;
-  const guest = `${d.guestName || "Guest"}${d.guestEmail ? ` <${d.guestEmail}>` : ""}${d.guestPhone ? ` · ${d.guestPhone}` : ""}`;
+/* ---------- formatting ---------- */
+const money = (n) => (n != null && n !== "" ? "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 }) : "");
+function niceDate(s) {
+  if (!s) return "?";
+  const [y, m, d] = String(s).split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+function nightsBetween(a, b) {
+  if (!a || !b) return 0;
+  return Math.round((new Date(a) - new Date(b)) / 86400000) * -1;
+}
+
+function emailShell(heading, bodyHtml, cfg) {
+  return `<!doctype html><html><body style="margin:0;background:${BRAND.bg};font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:${BRAND.ink}">
+  <div style="max-width:560px;margin:0 auto;padding:32px 20px">
+    <div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;color:${BRAND.accent};font-weight:700;margin-bottom:6px">${cfg.propertyName || "Your Stay"}</div>
+    <h1 style="font-size:26px;margin:0 0 18px;font-weight:700">${heading}</h1>
+    <div style="background:${BRAND.card};border:1px solid ${BRAND.line};border-radius:16px;padding:24px">${bodyHtml}</div>
+    <p style="font-size:13px;color:${BRAND.muted};margin:22px 0 0;line-height:1.6">
+      Questions? Reach out to ${cfg.hostName || "your host"}${cfg.adminEmail ? ` at <a href="mailto:${cfg.adminEmail}" style="color:${BRAND.accent}">${cfg.adminEmail}</a>` : ""}${cfg.adminPhone ? ` or ${cfg.adminPhone}` : ""}.<br/>
+      ${cfg.address ? cfg.address + "<br/>" : ""}
+    </p>
+  </div></body></html>`;
+}
+function summaryTable(d, cfg) {
+  const nights = d.nights || nightsBetween(d.checkIn, d.checkOut);
+  const row = (k, v) => `<tr><td style="padding:7px 0;color:${BRAND.muted};font-size:14px">${k}</td><td style="padding:7px 0;text-align:right;font-weight:600;font-size:14px">${v}</td></tr>`;
+  return `<table style="width:100%;border-collapse:collapse">
+    ${row("Guest", d.guestName || "Guest")}
+    ${row("Check-in", `${niceDate(d.checkIn)}${cfg.checkInTime ? ` · ${cfg.checkInTime}` : ""}`)}
+    ${row("Check-out", `${niceDate(d.checkOut)}${cfg.checkOutTime ? ` · ${cfg.checkOutTime}` : ""}`)}
+    ${row("Nights", nights || "—")}
+    ${d.totalPrice ? row("Total", money(d.totalPrice)) : ""}
+    ${d.code ? row("Booking code", d.code) : ""}
+  </table>`;
+}
+
+/* ---------- per-kind builders ---------- */
+function buildCustomer(kind, d, cfg) {
+  const sign = `Questions? Reach out to ${cfg.hostName || "your host"}${cfg.adminPhone ? ` at ${cfg.adminPhone}` : ""}.`;
   if (kind === "request") {
     return {
-      subject: `New booking request — ${d.guestName || "Guest"} (${dates})`,
-      text: [
-        `You have a new booking request for ${property}.`, "",
-        `Guest:   ${guest}`,
-        `Dates:   ${dates}`,
-        d.totalPrice ? `Total:   $${d.totalPrice}` : null,
-        d.notes ? `Notes:   ${d.notes}` : null, "",
-        `Review and accept it in the Admin dashboard.`,
-      ].filter(Boolean).join("\n"),
-      sms: `New booking request: ${d.guestName || "Guest"}, ${dates}, ${property}. Review in admin.`,
+      email: {
+        subject: `Reservation requested — ${cfg.propertyName || "your stay"}`,
+        html: emailShell(
+          "Reservation requested",
+          `<p style="margin:0 0 16px;line-height:1.6">Hi ${d.guestName || "there"}, thanks for your request! We've received it and ${cfg.hostName || "your host"} will review and confirm shortly. Here are the details:</p>${summaryTable(d, cfg)}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">This is a request, not yet a confirmed booking. You'll get a confirmation email once it's approved. You can reply to this email to reach ${cfg.hostName || "your host"}.</p>`,
+          cfg
+        ),
+        text: `Hi ${d.guestName || "there"}, we received your reservation request for ${cfg.propertyName} (${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}). ${cfg.hostName || "Your host"} will confirm shortly. ${sign}`,
+      },
+      sms: `Hi ${d.guestName || "there"}, we received your booking request for ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}). We'll confirm shortly. ${sign}`,
     };
   }
+  if (kind === "confirmed") {
+    return {
+      email: {
+        subject: `Reservation confirmed — ${cfg.propertyName || "your stay"} 🎉`,
+        html: emailShell(
+          "You're confirmed 🎉",
+          `<p style="margin:0 0 16px;line-height:1.6">Hi ${d.guestName || "there"}, your reservation is confirmed — we can't wait to host you! Here are your details:</p>${summaryTable(d, cfg)}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">Keep your booking code handy — you can use it on our site under “My Booking” to view your check-in guide and message us.</p>`,
+          cfg
+        ),
+        text: `Hi ${d.guestName || "there"}, your booking at ${cfg.propertyName} is CONFIRMED for ${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}. ${sign}`,
+      },
+      sms: `Hi ${d.guestName || "there"}, your booking at ${cfg.propertyName || "your stay"} is CONFIRMED for ${niceDate(d.checkIn)}–${niceDate(d.checkOut)}. Check-in ${cfg.checkInTime || "TBD"}, check-out ${cfg.checkOutTime || "TBD"}. ${sign}`,
+    };
+  }
+  return null;
+}
+function buildAdmin(kind, d, cfg) {
   if (kind === "message") {
     return {
-      subject: `Guest message — ${d.code || "booking"} (${property})`,
-      text: [
-        `New message from a guest about ${property}:`, "",
-        `Booking code: ${d.code || "—"}`,
-        `Guest:        ${guest}`,
-        `Dates:        ${dates}`, "",
-        `Message:`, d.message || "",
-      ].join("\n"),
-      sms: `Guest message (${d.code || "booking"}): ${(d.message || "").slice(0, 100)}`,
+      email: {
+        subject: `Guest message — ${d.code || "booking"} (${cfg.propertyName || "rental"})`,
+        html: emailShell("New guest message", `${summaryTable(d, cfg)}<p style="margin:16px 0 6px;font-weight:600">Message</p><p style="margin:0;line-height:1.6;white-space:pre-wrap">${(d.message || "").replace(/</g, "&lt;")}</p>`, cfg),
+        text: `Guest message (${d.code || "booking"}) from ${d.guestName}: ${d.message}`,
+      },
+      sms: `Guest message (${d.code || "booking"}) from ${d.guestName || "guest"}: ${(d.message || "").slice(0, 110)}`,
     };
   }
-  // booking
+  if (kind === "request") {
+    return {
+      email: {
+        subject: `New booking request — ${d.guestName || "Guest"}`,
+        html: emailShell("New booking request", `${summaryTable(d, cfg)}${d.guestEmail ? `<p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">Reply to the guest: ${d.guestEmail}${d.guestPhone ? ` · ${d.guestPhone}` : ""}</p>` : ""}${d.notes ? `<p style="margin:10px 0 0;font-size:13px"><b>Notes:</b> ${String(d.notes).replace(/</g, "&lt;")}</p>` : ""}<p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">Confirm it in your Admin dashboard to send the guest their confirmation.</p>`, cfg),
+        text: `New booking request: ${d.guestName}, ${niceDate(d.checkIn)}–${niceDate(d.checkOut)}. Review in admin.`,
+      },
+      sms: `New booking request: ${d.guestName || "Guest"}, ${niceDate(d.checkIn)}–${niceDate(d.checkOut)}, ${cfg.propertyName || "rental"}. Review in admin.`,
+    };
+  }
+  if (kind === "confirmed") {
+    return {
+      email: {
+        subject: `Booking confirmed — ${d.guestName || "Guest"}`,
+        html: emailShell("Booking confirmed", `${summaryTable(d, cfg)}<p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">The guest and cleaner have been notified.</p>`, cfg),
+        text: `Booking confirmed: ${d.guestName}, ${niceDate(d.checkIn)}–${niceDate(d.checkOut)}.`,
+      },
+      sms: null,
+    };
+  }
+  return null;
+}
+function buildCleaner(d, cfg) {
   return {
-    subject: `New booking — ${d.guestName || "Guest"} (${dates})`,
-    text: [
-      `A booking has been confirmed for ${property}.`, "",
-      `Guest:    ${guest}`,
-      `Check-in: ${d.checkIn || "?"}${d.checkInTime ? ` at ${d.checkInTime}` : ""}`,
-      `Check-out:${d.checkOut || "?"}${d.checkOutTime ? ` at ${d.checkOutTime}` : ""}`,
-      d.code ? `Code:     ${d.code}` : null, "",
-      `Please add the turnover to your calendar.`,
-    ].filter(Boolean).join("\n"),
-    sms: `New booking: ${d.guestName || "Guest"}, ${dates} at ${property}. Add the turnover to your calendar.`,
+    email: {
+      subject: `Turnover needed — ${niceDate(d.checkOut)} (${cfg.propertyName || "rental"})`,
+      html: emailShell("New booking — turnover", `${summaryTable(d, cfg)}<p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">Please schedule the cleaning around the check-out time above.</p>`, cfg),
+      text: `New booking at ${cfg.propertyName}: check-in ${niceDate(d.checkIn)} ${cfg.checkInTime || ""}, check-out ${niceDate(d.checkOut)} ${cfg.checkOutTime || ""}. Schedule cleaning.`,
+    },
+    sms: `New booking at ${cfg.propertyName || "the rental"}: check-in ${niceDate(d.checkIn)} ${cfg.checkInTime || ""}, check-out ${niceDate(d.checkOut)} ${cfg.checkOutTime || ""}. Please schedule cleaning.`,
   };
 }
 
@@ -101,31 +173,34 @@ module.exports = async (req, res) => {
   if (req.method !== "POST") return res.status(405).json({ error: "method not allowed" });
 
   try {
-    const body =
-      typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
+    const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
     const kind = body.kind;
-    const data = body.data || {};
-    if (!["request", "message", "booking"].includes(kind)) {
-      return res.status(400).json({ error: "unknown kind" });
-    }
+    const d = body.data || {};
+    if (!["request", "confirmed", "message"].includes(kind)) return res.status(400).json({ error: "unknown kind" });
 
-    // Pull recipients from the Sheet config (server-side, not client-supplied).
     const { data: store } = await openSheet();
     const cfg = store.config || {};
-    data.property = data.property || cfg.propertyName;
-    data.checkInTime = data.checkInTime || cfg.checkInTime;
-    data.checkOutTime = data.checkOutTime || cfg.checkOutTime;
-
-    const admin = { email: cfg.adminEmail, phone: cfg.adminPhone };
-    const cleaner = { email: cfg.cleanerEmail, phone: cfg.cleanerPhone };
-    const targets = kind === "booking" ? [cleaner, admin] : [admin];
-
-    const msg = build(kind, data);
     const results = [];
-    for (const t of targets) {
-      if (t.email) results.push(await sendEmail(t.email, msg.subject, msg.text, data.guestEmail));
-      if (t.phone) results.push(await sendSms(t.phone, msg.sms));
+
+    // Customer (guest) — request + confirmed
+    const cust = buildCustomer(kind, d, cfg);
+    if (cust) {
+      if (d.guestEmail) results.push(await sendEmail(d.guestEmail, cust.email.subject, cust.email.html, cust.email.text, cfg.adminEmail));
+      if (d.guestPhone) results.push(await sendSms(d.guestPhone, cust.sms));
     }
+    // Admin — all kinds
+    const adm = buildAdmin(kind, d, cfg);
+    if (adm) {
+      if (cfg.adminEmail && adm.email) results.push(await sendEmail(cfg.adminEmail, adm.email.subject, adm.email.html, adm.email.text, d.guestEmail));
+      if (cfg.adminPhone && adm.sms) results.push(await sendSms(cfg.adminPhone, adm.sms));
+    }
+    // Cleaner — only on confirmed
+    if (kind === "confirmed") {
+      const cl = buildCleaner(d, cfg);
+      if (cfg.cleanerEmail) results.push(await sendEmail(cfg.cleanerEmail, cl.email.subject, cl.email.html, cl.email.text));
+      if (cfg.cleanerPhone) results.push(await sendSms(cfg.cleanerPhone, cl.sms));
+    }
+
     const sent = results.filter((r) => r && r.ok).length;
     res.status(200).json({ ok: true, sent, results });
   } catch (e) {
