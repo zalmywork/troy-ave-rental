@@ -62,6 +62,7 @@ const defaultConfig = {
   adminPhone: "",
   cleanerEmail: "",
   cleanerPhone: "",
+  paymentInstructions: "",
 };
 // Merge stored/synced config over defaults; fall back to the baked-in photos
 // if the saved config has none (so the gallery never shows empty on the live site).
@@ -554,7 +555,12 @@ function App() {
     // No auto-email: the booking holds the dates; hit "Confirm & notify guest"
     // to send the guest their confirmation and alert the cleaner.
   };
-  // Re-send (or send) the confirmation: guest email/SMS + cleaner email/SMS.
+  // Approve the dates → email/SMS the guest the payment details (status "approved").
+  const approveBk = (b)=>{
+    sBookings(bookings.map(x=>x.id===b.id?{...x,status:"approved",approvedAt:new Date().toISOString()}:x));
+    notify("approved", {...b,status:"approved"});
+  };
+  // Guest has paid → send (or re-send) the confirmation: guest + cleaner email/SMS.
   const confirmBk = (b)=>{
     sBookings(bookings.map(x=>x.id===b.id?{...x,status:"confirmed",notifiedAt:new Date().toISOString()}:x));
     notify("confirmed", {...b,status:"confirmed"});
@@ -574,11 +580,14 @@ function App() {
     sPricing(p);setPs("");setPe("");setPa("");
   };
 
+  // Accept a request into Bookings as "pending" — no guest notice yet. From the
+  // Bookings tab you can edit the dates/price (e.g. if the guest changed plans),
+  // then Approve to send payment details, then mark it paid to confirm.
   const acceptReq = (req)=>{
-    const bk = {id:Date.now().toString(),code:genCode(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"confirmed",notifiedAt:new Date().toISOString()};
+    const bk = {id:Date.now().toString(),code:genCode(),guestName:req.guestName,guestEmail:req.guestEmail,guestPhone:req.guestPhone,checkIn:req.checkIn,checkOut:req.checkOut,totalPrice:req.totalPrice,depositPaid:false,depositAmount:"",notes:req.notes,status:"pending"};
     sBookings([...bookings,bk]);
     sRequests(requests.filter(r=>r.id!==req.id));
-    notify("confirmed", bk); // confirm the guest + alert the cleaner
+    setATab("bookings");
   };
 
   const emailOk = (e)=>/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e||"");
@@ -705,6 +714,16 @@ function App() {
       </div>
     );
 
+    // Public contact block — shown when the host has set a phone and/or email.
+    const contactCard = (config.adminPhone||config.adminEmail) ? (
+      <div style={{background:P.card,borderRadius:16,padding:24,marginTop:16,boxShadow:"0 6px 24px rgba(0,0,0,0.10)",border:`1px solid ${P.borderLt}`}}>
+        <div style={{fontSize:17,fontWeight:700,marginBottom:4}}>Questions?</div>
+        <p style={{fontSize:14,color:P.muted,margin:"0 0 14px"}}>Reach out to {config.hostName||"us"} directly — happy to help before you book.</p>
+        {config.adminPhone && <a href={`tel:${String(config.adminPhone).replace(/[^0-9+]/g,"")}`} style={{display:"flex",alignItems:"center",gap:10,textDecoration:"none",fontSize:15,fontWeight:600,color:P.text,marginBottom:config.adminEmail?10:0}}><span>📞</span><span>{config.adminPhone}</span></a>}
+        {config.adminEmail && <a href={`mailto:${config.adminEmail}`} style={{display:"flex",alignItems:"center",gap:10,textDecoration:"none",fontSize:15,fontWeight:600,color:P.text}}><span>✉️</span><span>{config.adminEmail}</span></a>}
+      </div>
+    ) : null;
+
     return (
       <div style={{minHeight:"100vh",background:P.bg}}>
         {/* top bar */}
@@ -780,6 +799,7 @@ function App() {
             </div>
 
             {config.guestGuide && <div style={{marginTop:24}}><Btn onClick={()=>setGuideOpen(true)} v="outline" sx={{width:"100%"}}>🔑 View Guest Entrance Guide</Btn></div>}
+            {isMobile && contactCard}
           </div>
 
           {/* RIGHT — reservation card */}
@@ -791,6 +811,7 @@ function App() {
                 <p style={{fontSize:14,color:P.muted,margin:"0 0 16px"}}>Enter your booking code to view your check-in guide and message the host.</p>
                 <Btn v="outline" onClick={()=>setPortalOpen(true)} sx={{width:"100%"}}>My Booking — enter your code</Btn>
               </div>
+              {contactCard}
             </div>
           )}
         </div>
@@ -813,7 +834,7 @@ function App() {
           {sent ? (
             <div style={{textAlign:"center",padding:"20px 0"}}>
               <div style={{width:64,height:64,borderRadius:"50%",background:P.okLt,color:P.ok,fontSize:34,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 16px"}}>✓</div>
-              <p style={{fontSize:15,lineHeight:1.6,color:P.muted}}>Your booking request has been submitted. The host will review it and get back to you soon.</p>
+              <p style={{fontSize:15,lineHeight:1.6,color:P.muted}}>Your request has been submitted. {config.hostName||"The host"} will review it and be in touch shortly with payment details to confirm your dates.</p>
               <Btn onClick={()=>{setBkModal(false);setSent(false);}} sx={{marginTop:20}}>Close</Btn>
             </div>
           ) : (
@@ -829,7 +850,7 @@ function App() {
               <Inp label="Email *" value={gEmail} onChange={setGEmail} type="email" placeholder="jane@email.com" />
               <Inp label="Phone (optional — for text updates)" value={gPhone} onChange={setGPhone} type="tel" placeholder="+1 (555) 000-0000" />
               <Inp label="Notes" value={gNotes} onChange={setGNotes} multi placeholder="Any questions or special requests?" />
-              <p style={{fontSize:12,color:P.muted,margin:"-4px 0 12px"}}>We'll email you a confirmation. Add a phone number to also get text updates.</p>
+              <p style={{fontSize:12,color:P.muted,margin:"-4px 0 12px"}}>{config.hostName||"The host"} will reach out with payment details to confirm your dates. Add a phone number to also get text updates.</p>
               <Btn onClick={submitReq} v="gradient" disabled={!gName||!emailOk(gEmail)} sx={{width:"100%",marginTop:6}}>Submit Request</Btn>
             </div>
           )}
@@ -1034,7 +1055,7 @@ function App() {
                   <span style={{fontWeight:700,fontSize:15,textDecoration:cancelled?"line-through":"none"}}>{b.guestName||"Guest"}</span>
                   <div style={{display:"flex",gap:6,alignItems:"center"}}>
                     {b.depositPaid && !cancelled && <span style={{fontSize:11,background:P.okLt,color:P.ok,padding:"2px 8px",borderRadius:6,fontWeight:600}}>Deposit ✓</span>}
-                    <span style={{fontSize:11,background:cancelled?"#F6E7E2":b.status==="confirmed"?P.okLt:P.surface,color:cancelled?P.accentDk:b.status==="confirmed"?P.ok:P.muted,padding:"2px 8px",borderRadius:6,fontWeight:600}}>{b.status||"pending"}</span>
+                    <span style={{fontSize:11,background:cancelled?"#F6E7E2":b.status==="confirmed"?P.okLt:b.status==="approved"?P.accentLt:P.surface,color:cancelled?P.accentDk:b.status==="confirmed"?P.ok:b.status==="approved"?P.accentDk:P.muted,padding:"2px 8px",borderRadius:6,fontWeight:600}}>{b.status==="approved"?"awaiting payment":(b.status||"pending")}</span>
                   </div>
                 </div>
                 <div style={{fontSize:13,color:P.muted}}>{fmtNice(b.checkIn)} → {fmtNice(b.checkOut)} · {daysBetween(parseD(b.checkIn),parseD(b.checkOut))} nights {b.totalPrice?`· ${money(b.totalPrice)}`:""}</div>
@@ -1049,15 +1070,24 @@ function App() {
                     </>
                   ) : (
                     <>
-                      {(b.notifiedAt||b.status==="confirmed")
+                      {b.status==="confirmed"
                         ? <>
-                            <span style={{fontSize:13,color:P.ok,fontWeight:700}}>✓ {b.notifiedAt?`Notified ${new Date(b.notifiedAt).toLocaleDateString()}`:"Confirmed"}</span>
-                            <Btn v="ghost" small onClick={()=>{ if(confirm("Resend the confirmation to the guest and cleaner?")) confirmBk(b); }}>Resend</Btn>
+                            <span style={{fontSize:13,color:P.ok,fontWeight:700}}>✓ {b.notifiedAt?`Confirmed ${new Date(b.notifiedAt).toLocaleDateString()}`:"Confirmed"}</span>
+                            <Btn v="ghost" small onClick={()=>{ if(confirm("Resend the confirmation to the guest and cleaner?")) confirmBk(b); }}>Resend confirmation</Btn>
                           </>
-                        : <Btn v="outline" small onClick={()=>{ if(confirm(`Send confirmation${b.guestEmail?` to ${b.guestEmail}`:""} and notify the cleaner?`)) confirmBk(b); }}>✓ Confirm &amp; notify guest</Btn>}
+                        : b.status==="approved"
+                        ? <>
+                            <span style={{fontSize:13,color:P.accentDk,fontWeight:700}}>📤 Payment details sent{b.approvedAt?` ${new Date(b.approvedAt).toLocaleDateString()}`:""}</span>
+                            <Btn v="outline" small onClick={()=>{ if(confirm(`Mark as paid and send ${b.guestName||"the guest"} their confirmation${b.guestEmail?` (${b.guestEmail})`:""}, and notify the cleaner?`)) confirmBk(b); }}>✓ Mark paid &amp; confirm</Btn>
+                            <Btn v="ghost" small onClick={()=>{ if(confirm("Resend the payment details to the guest?")) approveBk(b); }}>Resend payment details</Btn>
+                          </>
+                        : <>
+                            <Btn v="outline" small onClick={()=>{ if(confirm(`Approve these dates and send ${b.guestName||"the guest"} payment details${b.guestEmail?` at ${b.guestEmail}`:""}?`)) approveBk(b); }}>✓ Approve &amp; send payment details</Btn>
+                            <span style={{fontSize:12,color:P.muted}}>Tap the card to edit dates/price first</span>
+                          </>}
                       <Btn v="ghost" small onClick={()=>{ if(confirm("Cancel this booking? This frees the dates and emails/texts the guest and cleaner a cancellation notice.")) cancelBk(b); }}>Cancel</Btn>
                       <Btn v="ghost" small onClick={()=>{ if(confirm("Permanently delete this booking (no notification)? For test cleanup.")) delBk(b.id); }}>Delete</Btn>
-                      {!b.guestEmail && <span style={{fontSize:12,color:P.accentDk,fontWeight:600}}>⚠ No guest email — they won't get a confirmation</span>}
+                      {!b.guestEmail && <span style={{fontSize:12,color:P.accentDk,fontWeight:600}}>⚠ No guest email — they won't get notified</span>}
                     </>
                   )}
                 </div>
@@ -1069,7 +1099,7 @@ function App() {
                 <Inp label="Guest Name" value={bf.guestName} onChange={v=>setBf(f=>({...f,guestName:v}))} placeholder="Jane Smith" />
                 <Inp label="Email" value={bf.guestEmail} onChange={v=>setBf(f=>({...f,guestEmail:v}))} placeholder="jane@email.com" />
                 <Inp label="Phone" value={bf.guestPhone} onChange={v=>setBf(f=>({...f,guestPhone:v}))} placeholder="+1 555-0000" />
-                <Inp label="Status" value={bf.status} onChange={v=>setBf(f=>({...f,status:v}))} placeholder="confirmed / pending" />
+                <Inp label="Status" value={bf.status} onChange={v=>setBf(f=>({...f,status:v}))} placeholder="pending / approved / confirmed" />
                 <Inp label="Check-in Date" value={bf.checkIn} onChange={v=>setBf(f=>({...f,checkIn:v}))} type="date" />
                 <Inp label="Check-out Date" value={bf.checkOut} onChange={v=>setBf(f=>({...f,checkOut:v}))} type="date" />
                 <Inp label="Total Price" value={bf.totalPrice} onChange={v=>setBf(f=>({...f,totalPrice:v}))} type="number" placeholder="0" />
@@ -1120,7 +1150,8 @@ function App() {
 
         {aTab==="requests" && (
           <div>
-            <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 16px"}}>Booking Requests</h3>
+            <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 4px"}}>Booking Requests</h3>
+            <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Accept a request to move it into Bookings (the guest isn't notified yet). From Bookings you can edit the dates/price, then <b>approve</b> to send payment details, then <b>mark it paid</b> to confirm.</p>
             {requests.length===0 && <p style={{color:P.muted,fontSize:14,background:P.card,borderRadius:14,padding:24,textAlign:"center",border:`1px solid ${P.borderLt}`}}>No pending requests.</p>}
             {requests.map(r=>(
               <div key={r.id} style={{background:P.card,borderRadius:14,padding:20,marginBottom:10,border:`1px solid ${P.borderLt}`}}>
@@ -1133,8 +1164,8 @@ function App() {
                 {r.guestPhone && <div style={{fontSize:13,color:P.muted}}>📞 {r.guestPhone}</div>}
                 {r.notes && <div style={{fontSize:13,marginTop:6,fontStyle:"italic"}}>"{r.notes}"</div>}
                 <div style={{display:"flex",gap:8,marginTop:14}}>
-                  <Btn small onClick={()=>{ if(confirm(`Confirm this booking? This emails/texts ${r.guestName||"the guest"} a confirmation and notifies the cleaner.`)) acceptReq(r); }}>✓ Confirm &amp; Book</Btn>
-                  <Btn v="danger" small onClick={()=>sRequests(requests.filter(x=>x.id!==r.id))}>Decline</Btn>
+                  <Btn small onClick={()=>acceptReq(r)}>✓ Accept → Bookings</Btn>
+                  <Btn v="danger" small onClick={()=>{ if(confirm("Decline and remove this request? The guest is not notified.")) sRequests(requests.filter(x=>x.id!==r.id)); }}>Decline</Btn>
                 </div>
               </div>
             ))}
@@ -1288,6 +1319,11 @@ function App() {
               <Inp label="Cleaner email" value={config.cleanerEmail} onChange={v=>sConfig({...config,cleanerEmail:v})} type="email" placeholder="cleaner@email.com" />
               <Inp label="Cleaner phone (for SMS)" value={config.cleanerPhone} onChange={v=>sConfig({...config,cleanerPhone:v})} type="tel" placeholder="+1 555 000 0000" />
               <p style={{fontSize:12,color:P.muted,margin:"10px 0 0"}}>Use full international format for phone numbers, e.g. +1 for the US. Texts require SMS to be enabled (Twilio) — emails work on their own.</p>
+            </div>
+            <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`,marginBottom:20}}>
+              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 6px"}}>Payment details</h3>
+              <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Sent to the guest when you <b>approve</b> a booking. Include how you want to be paid — e.g. Zelle to a phone/email, a Venmo handle, or a payment link. Leave blank to just tell the guest you'll follow up directly.</p>
+              <Inp label="Payment instructions (shown to the guest)" value={config.paymentInstructions} onChange={v=>sConfig({...config,paymentInstructions:v})} multi placeholder={"Example:\nZelle: 718-555-0000 (Ari)\nor Venmo @ari-rentals\nPlease include your name + dates in the note."} />
             </div>
             <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
               <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 20px"}}>Access PINs</h3>
