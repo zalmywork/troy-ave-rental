@@ -5,6 +5,7 @@ in this order (kitchen first) and guests toggle through them in the gallery.
 
 | File | Photo |
 |------|-------|
+| `00-living-room.jpg`        | Living room (main/hero) — brick wall, sectional sofas, mounted TV |
 | `01-kitchen.jpg`            | Kitchen — white cabinets, island + stools, stainless fridge |
 | `02-living-dining.jpg`      | Living/dining — round wood table, exposed brick, shelves, TV |
 | `03-bedroom-queen.jpg`      | Bedroom — queen bed, brick wall, mauve throw |
