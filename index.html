@@ -1065,6 +1065,7 @@ function App() {
                   <span style={{fontWeight:700,fontSize:15,textDecoration:cancelled?"line-through":"none"}}>{b.guestName||"Guest"}</span>
                   <div style={{display:"flex",gap:6,alignItems:"center"}}>
                     {b.depositPaid && !cancelled && <span style={{fontSize:11,background:P.okLt,color:P.ok,padding:"2px 8px",borderRadius:6,fontWeight:600}}>Deposit ✓</span>}
+                    {b.paidInFull && !cancelled && <span style={{fontSize:11,background:P.ok,color:"#fff",padding:"2px 8px",borderRadius:6,fontWeight:600}}>Paid in full ✓{b.paidAt?` · ${new Date(b.paidAt).toLocaleDateString()}`:""}</span>}
                     <span style={{fontSize:11,background:cancelled?"#F6E7E2":b.status==="confirmed"?P.okLt:b.status==="approved"?P.accentLt:P.surface,color:cancelled?P.accentDk:b.status==="confirmed"?P.ok:b.status==="approved"?P.accentDk:P.muted,padding:"2px 8px",borderRadius:6,fontWeight:600}}>{b.status==="approved"?"awaiting payment":(b.status||"pending")}</span>
                   </div>
                 </div>
@@ -1116,9 +1117,13 @@ function App() {
                 <Inp label="Total Price" value={bf.totalPrice} onChange={v=>setBf(f=>({...f,totalPrice:v}))} type="number" placeholder="0" />
                 <Inp label="Deposit Amount" value={bf.depositAmount} onChange={v=>setBf(f=>({...f,depositAmount:v}))} type="number" placeholder="0" />
               </div>
-              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:14,margin:"4px 0 14px",cursor:"pointer"}}>
+              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:14,margin:"4px 0 8px",cursor:"pointer"}}>
                 <input type="checkbox" checked={bf.depositPaid} onChange={e=>setBf(f=>({...f,depositPaid:e.target.checked}))} style={{width:18,height:18,accentColor:P.accent}} />
                 <span>Deposit paid</span>
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:14,margin:"0 0 14px",cursor:"pointer"}}>
+                <input type="checkbox" checked={!!bf.paidInFull} onChange={e=>setBf(f=>({...f,paidInFull:e.target.checked,paidAt:e.target.checked?(f.paidAt||new Date().toISOString()):""}))} style={{width:18,height:18,accentColor:P.ok}} />
+                <span>Paid in full{bf.paidInFull&&bf.paidAt?<span style={{color:P.ok,fontWeight:600}}> — marked {new Date(bf.paidAt).toLocaleDateString()}</span>:""}</span>
               </label>
               <Inp label="Notes" value={bf.notes} onChange={v=>setBf(f=>({...f,notes:v}))} multi placeholder="Internal notes..." />
               <div style={{display:"flex",justifyContent:"space-between",marginTop:8}}>
