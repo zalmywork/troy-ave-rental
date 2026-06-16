@@ -61,8 +61,10 @@ const defaultConfig = {
   hostName: "Ari",
   adminEmail: "",
   adminPhone: "",
+  adminSmsConsent: false,
   cleanerEmail: "",
   cleanerPhone: "",
+  cleanerSmsConsent: false,
   paymentInstructions: "",
 };
 // Merge stored/synced config over defaults; fall back to the baked-in photos
@@ -206,6 +208,24 @@ function Inp({ label, value, onChange, type="text", placeholder, multi, sx }) {
         ? <textarea value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={4} style={{...base,resize:"vertical"}} onFocus={e=>{e.target.style.borderColor=P.accent;e.target.style.boxShadow="0 0 0 3px "+P.accentLt}} onBlur={e=>{e.target.style.borderColor=P.border;e.target.style.boxShadow="none"}} />
         : <input type={type} value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={base} onFocus={e=>{e.target.style.borderColor=P.accent;e.target.style.boxShadow="0 0 0 3px "+P.accentLt}} onBlur={e=>{e.target.style.borderColor=P.border;e.target.style.boxShadow="none"}} />
       }
+    </label>
+  );
+}
+
+/* ── SmsConsent ── express, logged consent captured at the point a number is
+   entered. This is the web-form opt-in shown to carriers for SMS verification. */
+function SmsConsent({ checked, onChange, who }) {
+  return (
+    <label style={{display:"flex",gap:10,alignItems:"flex-start",margin:"0 0 4px",padding:"12px 14px",border:`1px solid ${P.borderLt}`,borderRadius:12,background:P.surface,cursor:"pointer"}}>
+      <input type="checkbox" checked={!!checked} onChange={e=>onChange(e.target.checked)} style={{marginTop:3,width:16,height:16,flexShrink:0,accentColor:P.accent}} />
+      <span style={{fontSize:12.5,lineHeight:1.5,color:P.muted}}>
+        I agree to receive operational SMS text notifications from <b>Troy Ave Rental</b> at the number above
+        (new booking requests, guest portal messages, and booking confirmations). Message frequency varies.
+        Msg &amp; data rates may apply. Reply <b>STOP</b> to cancel, <b>HELP</b> for help. See our{" "}
+        <a href="/optin.html" target="_blank" rel="noopener" style={{color:P.accent}}>SMS Policy</a> and{" "}
+        <a href="/privacy.html" target="_blank" rel="noopener" style={{color:P.accent}}>Privacy Policy</a>.
+        Consent is not a condition of any purchase.
+      </span>
     </label>
   );
 }
@@ -1331,9 +1351,11 @@ function App() {
               <Inp label="Host name (shown to guests, e.g. in “reach out to Ari”)" value={config.hostName} onChange={v=>sConfig({...config,hostName:v})} placeholder="Ari" />
               <Inp label="Admin email" value={config.adminEmail} onChange={v=>sConfig({...config,adminEmail:v})} type="email" placeholder="you@email.com" />
               <Inp label="Admin phone (for SMS)" value={config.adminPhone} onChange={v=>sConfig({...config,adminPhone:v})} type="tel" placeholder="+1 555 000 0000" />
+              <SmsConsent checked={!!config.adminSmsConsent} onChange={v=>sConfig({...config,adminSmsConsent:v})} who="host" />
               <h4 style={{fontSize:14,fontWeight:700,margin:"18px 0 10px"}}>🧹 Cleaner</h4>
               <Inp label="Cleaner email" value={config.cleanerEmail} onChange={v=>sConfig({...config,cleanerEmail:v})} type="email" placeholder="cleaner@email.com" />
               <Inp label="Cleaner phone (for SMS)" value={config.cleanerPhone} onChange={v=>sConfig({...config,cleanerPhone:v})} type="tel" placeholder="+1 555 000 0000" />
+              <SmsConsent checked={!!config.cleanerSmsConsent} onChange={v=>sConfig({...config,cleanerSmsConsent:v})} who="cleaner" />
               <p style={{fontSize:12,color:P.muted,margin:"10px 0 0"}}>Use full international format for phone numbers, e.g. +1 for the US. Texts require SMS to be enabled (Twilio) — emails work on their own.</p>
             </div>
             <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`,marginBottom:20}}>
