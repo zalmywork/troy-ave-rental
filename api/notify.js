@@ -43,21 +43,39 @@ async function sendEmail(to, subject, html, text, replyTo) {
   if (!r.ok) return { error: await r.text() };
   return { ok: true, channel: "email", to };
 }
+// Coerce a phone number to E.164 (Twilio requires it). US-friendly: 10 digits
+// → +1XXXXXXXXXX, 11 digits starting 1 → +1…, already-+ kept. Anything else is
+// passed through for Twilio to validate.
+function e164(n) {
+  if (!n) return n;
+  const s = String(n).trim();
+  if (s.startsWith("+")) return "+" + s.slice(1).replace(/\D/g, "");
+  const d = s.replace(/\D/g, "");
+  if (d.length === 10) return "+1" + d;
+  if (d.length === 11 && d[0] === "1") return "+" + d;
+  return s;
+}
 async function sendSms(to, body) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const auth = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.TWILIO_FROM;
-  if (!sid || !auth || !from || !to) return { skipped: "sms" };
+  const msid = process.env.TWILIO_MESSAGING_SERVICE_SID; // optional A2P route
+  if (!sid || !auth || !to || (!from && !msid)) return { skipped: "sms" };
+  // Prefer a Messaging Service (recommended for A2P 10DLC) when configured;
+  // otherwise send from the number directly.
+  const params = { To: e164(to), Body: body };
+  if (msid) params.MessagingServiceSid = msid;
+  else params.From = e164(from);
   const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
     headers: {
       Authorization: "Basic " + Buffer.from(`${sid}:${auth}`).toString("base64"),
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams({ To: to, From: from, Body: body }),
+    body: new URLSearchParams(params),
   });
   if (!r.ok) return { error: await r.text() };
-  return { ok: true, channel: "sms", to };
+  return { ok: true, channel: "sms", to: e164(to) };
 }
 
 /* ---------- formatting ---------- */
