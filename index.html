@@ -1143,7 +1143,6 @@ function App() {
                             <span style={{fontSize:12,color:P.muted}}>Tap the card to edit dates/price first</span>
                           </>}
                       <Btn v="ghost" small onClick={()=>{ if(confirm("Cancel this booking? This frees the dates and emails/texts the guest and cleaner a cancellation notice.")) cancelBk(b); }}>Cancel</Btn>
-                      <Btn v="ghost" small onClick={()=>{ if(confirm("Permanently delete this booking (no notification)? For test cleanup.")) delBk(b.id); }}>Delete</Btn>
                       {!b.guestEmail && <span style={{fontSize:12,color:P.accentDk,fontWeight:600}}>⚠ No guest email — they won't get notified</span>}
                     </>
                   )}
