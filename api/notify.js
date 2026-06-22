@@ -35,13 +35,18 @@ async function sendEmail(to, subject, html, text, replyTo) {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey || !to) return { skipped: "email" };
   const from = process.env.MAIL_FROM || "onboarding@resend.dev";
+  // Closed-test mode: NOTIFY_TEST_EMAIL redirects every email to one inbox, so
+  // real guests/cleaners are never contacted. The intended recipient is shown.
+  const test = process.env.NOTIFY_TEST_EMAIL;
+  const dest = test || to;
+  const subj = test ? `[TEST → ${to}] ${subject}` : subject;
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to, subject, html, text, reply_to: replyTo || undefined }),
+    body: JSON.stringify({ from, to: dest, subject: subj, html, text, reply_to: replyTo || undefined }),
   });
   if (!r.ok) return { error: await r.text() };
-  return { ok: true, channel: "email", to };
+  return { ok: true, channel: "email", to: dest, ...(test ? { intendedFor: to } : {}) };
 }
 // Coerce a phone number to E.164 (Twilio requires it). US-friendly: 10 digits
 // → +1XXXXXXXXXX, 11 digits starting 1 → +1…, already-+ kept. Anything else is
@@ -63,7 +68,10 @@ async function sendSms(to, body) {
   if (!sid || !auth || !to || (!from && !msid)) return { skipped: "sms" };
   // Prefer a Messaging Service (recommended for A2P 10DLC) when configured;
   // otherwise send from the number directly.
-  const params = { To: e164(to), Body: body };
+  // Closed-test mode: NOTIFY_TEST_SMS redirects every text to one number.
+  const test = process.env.NOTIFY_TEST_SMS;
+  const dest = test || to;
+  const params = { To: e164(dest), Body: test ? `[TEST → ${to}]\n${body}` : body };
   if (msid) params.MessagingServiceSid = msid;
   else params.From = e164(from);
   const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
@@ -75,7 +83,7 @@ async function sendSms(to, body) {
     body: new URLSearchParams(params),
   });
   if (!r.ok) return { error: await r.text() };
-  return { ok: true, channel: "sms", to: e164(to) };
+  return { ok: true, channel: "sms", to: e164(dest), ...(test ? { intendedFor: to } : {}) };
 }
 
 /* ---------- formatting ---------- */
@@ -117,6 +125,27 @@ function summaryTable(d, cfg) {
   </table>`;
 }
 
+// Standard SMS sign-off (host name + admin phone pulled from the admin config).
+function footer(cfg) {
+  const host = cfg.hostName || "your host";
+  return `If you have any questions, please send us a message via the messaging board on the website, or reach out to ${host}${cfg.adminPhone ? ` at ${cfg.adminPhone}` : ""}.`;
+}
+// Plain-text booking summary for SMS, mirroring the email's summary table.
+function smsSummary(d, cfg) {
+  const nights = d.nights || nightsBetween(d.checkIn, d.checkOut);
+  const lines = [
+    `Guest: ${d.guestName || "Guest"}`,
+    `Check-in: ${niceDate(d.checkIn)}${cfg.checkInTime ? ` at ${cfg.checkInTime}` : ""}`,
+    `Check-out: ${niceDate(d.checkOut)}${cfg.checkOutTime ? ` at ${cfg.checkOutTime}` : ""}`,
+    `Nights: ${nights || "—"}`,
+  ];
+  if (d.totalPrice) lines.push(`Total: ${money(d.totalPrice)}`);
+  if (d.code) lines.push(`Booking code: ${d.code}`);
+  return lines.join("\n");
+}
+// Join SMS sections with a blank line between, dropping any empty ones.
+const smsJoin = (...parts) => parts.filter(Boolean).join("\n\n");
+
 /* ---------- per-kind builders ---------- */
 function buildCustomer(kind, d, cfg) {
   const host = cfg.hostName || "your host";
@@ -134,7 +163,12 @@ function buildCustomer(kind, d, cfg) {
         ),
         text: `Hi ${d.guestName || "there"}, thanks — we received your reservation request for ${cfg.propertyName} (${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}). ${note}`,
       },
-      sms: `Hi ${d.guestName || "there"}, thanks for your booking request for ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}). ${note}`,
+      sms: smsJoin(
+        `Hi ${d.guestName || "there"}, thanks for your reservation request at ${cfg.propertyName || "our place"}! We've received it. ${note}`,
+        smsSummary(d, cfg),
+        `This is a request, not yet a confirmed booking — you'll get a confirmation once payment is arranged.`,
+        footer(cfg)
+      ),
     };
   }
   if (kind === "approved") {
@@ -156,7 +190,13 @@ function buildCustomer(kind, d, cfg) {
         ),
         text: `Hi ${d.guestName || "there"}, ${host} approved your dates at ${cfg.propertyName} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)})${d.totalPrice ? `, total ${money(d.totalPrice)}` : ""}. ${payText} Once payment is received we'll confirm.`,
       },
-      sms: `Hi ${d.guestName || "there"}, ${host} approved your dates at ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)})${d.totalPrice ? ` — ${money(d.totalPrice)}` : ""}. ${payText}`,
+      sms: smsJoin(
+        `Hi ${d.guestName || "there"}, great news — ${host} has approved your dates at ${cfg.propertyName || "our place"}! To lock everything in, please complete payment${d.totalPrice ? ` of ${money(d.totalPrice)}` : ""}.`,
+        smsSummary(d, cfg),
+        payText,
+        `As soon as your payment is received we'll send your confirmation and check-in details.`,
+        footer(cfg)
+      ),
     };
   }
   if (kind === "cancelled") {
@@ -170,7 +210,12 @@ function buildCustomer(kind, d, cfg) {
         ),
         text: `Hi ${d.guestName || "there"}, your reservation at ${cfg.propertyName} for ${niceDate(d.checkIn)}–${niceDate(d.checkOut)} has been cancelled. ${sign}`,
       },
-      sms: `Hi ${d.guestName || "there"}, your reservation at ${cfg.propertyName || "your stay"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}) has been CANCELLED. ${sign}`,
+      sms: smsJoin(
+        `Hi ${d.guestName || "there"}, your reservation at ${cfg.propertyName || "our place"} has been CANCELLED.`,
+        smsSummary(d, cfg),
+        `If this is unexpected or you have questions, let us know.`,
+        footer(cfg)
+      ),
     };
   }
   if (kind === "reply") {
@@ -189,7 +234,11 @@ function buildCustomer(kind, d, cfg) {
         ),
         text: `Hi ${d.guestName || "there"},\n\n${d.reply}\n\n${r}${orig ? `\n\n———\nYour message: "${orig}"` : ""}`,
       },
-      sms: `${host}: ${d.reply}${orig ? `\n(re: "${orig.slice(0, 60)}${orig.length > 60 ? "…" : ""}")` : ""}\n\n${r}`,
+      sms: smsJoin(
+        `${host}: ${d.reply}`,
+        orig ? `(Re: "${orig.slice(0, 80)}${orig.length > 80 ? "…" : ""}")` : "",
+        footer(cfg)
+      ),
     };
   }
   if (kind === "confirmed") {
@@ -203,14 +252,12 @@ function buildCustomer(kind, d, cfg) {
         ),
         text: `Hi ${d.guestName || "there"}, your booking at ${cfg.propertyName} is CONFIRMED for ${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}. ${sign}`,
       },
-      sms: [
-        `Hi ${d.guestName || "there"}, you're CONFIRMED at ${cfg.propertyName || "your stay"} 🎉`,
-        `Check-in: ${niceDate(d.checkIn)}${cfg.checkInTime ? ` · ${cfg.checkInTime}` : ""}`,
-        `Check-out: ${niceDate(d.checkOut)}${cfg.checkOutTime ? ` · ${cfg.checkOutTime}` : ""}`,
-        `${d.nights || nightsBetween(d.checkIn, d.checkOut)} night${(d.nights || nightsBetween(d.checkIn, d.checkOut)) !== 1 ? "s" : ""}${d.totalPrice ? ` · ${money(d.totalPrice)}` : ""}`,
-        d.code ? `Booking code: ${d.code}` : null,
-        sign,
-      ].filter(Boolean).join("\n"),
+      sms: smsJoin(
+        `Hi ${d.guestName || "there"}, your reservation at ${cfg.propertyName || "our place"} is CONFIRMED — we can't wait to host you! 🎉`,
+        smsSummary(d, cfg),
+        `Keep your booking code handy — use it under "My Booking" on our site to view your check-in guide.`,
+        footer(cfg)
+      ),
     };
   }
   if (kind === "checkin") {
@@ -226,7 +273,12 @@ function buildCustomer(kind, d, cfg) {
         ),
         text: `Hi ${d.guestName || "there"}, ${soon ? `your stay at ${cfg.propertyName} is coming up` : `check-in at ${cfg.propertyName} is today`} — ${niceDate(d.checkIn)}${cfg.checkInTime ? ` from ${cfg.checkInTime}` : ""}.${guide} ${sign}`,
       },
-      sms: `Hi ${d.guestName || "there"}, ${soon ? `your stay at ${cfg.propertyName || "our place"} is coming up` : `check-in is TODAY`}: ${niceDate(d.checkIn)}${cfg.checkInTime ? ` from ${cfg.checkInTime}` : ""}.${guide} ${sign}`,
+      sms: smsJoin(
+        `Hi ${d.guestName || "there"}, ${soon ? `your stay at ${cfg.propertyName || "our place"} is coming up!` : `today's the day — check-in at ${cfg.propertyName || "our place"} is today! 🔑`}`,
+        smsSummary(d, cfg),
+        `Check-in is from ${cfg.checkInTime || "the afternoon"}.${guide}`,
+        footer(cfg)
+      ),
     };
   }
   if (kind === "checkout") {
@@ -241,7 +293,12 @@ function buildCustomer(kind, d, cfg) {
         ),
         text: `Hi ${d.guestName || "there"}, ${soon ? "check-out is coming up" : "check-out is today"} at ${cfg.propertyName}: ${niceDate(d.checkOut)}${cfg.checkOutTime ? ` by ${cfg.checkOutTime}` : ""}. Thanks for staying! ${sign}`,
       },
-      sms: `Hi ${d.guestName || "there"}, ${soon ? "check-out is coming up" : "check-out is TODAY"}: ${niceDate(d.checkOut)}${cfg.checkOutTime ? ` by ${cfg.checkOutTime}` : ""}. Thanks for staying at ${cfg.propertyName || "our place"}! ${sign}`,
+      sms: smsJoin(
+        `Hi ${d.guestName || "there"}, ${soon ? `just a heads-up that your stay at ${cfg.propertyName || "our place"} is wrapping up soon.` : `we hope you had a wonderful stay at ${cfg.propertyName || "our place"}!`}`,
+        smsSummary(d, cfg),
+        `Check-out is ${niceDate(d.checkOut)}${cfg.checkOutTime ? ` by ${cfg.checkOutTime}` : ""}. Thanks so much for staying with us!`,
+        footer(cfg)
+      ),
     };
   }
   return null;
@@ -307,7 +364,10 @@ function buildCleaner(d, cfg, kind) {
         html: emailShell("Booking cancelled — no turnover", `${summaryTable(d, cfg)}<p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">This booking was cancelled — no cleaning is needed for these dates.</p>`, cfg),
         text: `Cancelled: the booking at ${cfg.propertyName} for ${niceDate(d.checkIn)}–${niceDate(d.checkOut)} is cancelled. No cleaning needed.`,
       },
-      sms: `Cancelled: ${cfg.propertyName || "booking"} ${niceDate(d.checkIn)}–${niceDate(d.checkOut)} is cancelled — no cleaning needed for these dates.`,
+      sms: smsJoin(
+        `Cancelled: the booking at ${cfg.propertyName || "the rental"} (${niceDate(d.checkIn)}–${niceDate(d.checkOut)}) is cancelled — no cleaning is needed for these dates.`,
+        footer(cfg)
+      ),
     };
   }
   return {
@@ -316,7 +376,16 @@ function buildCleaner(d, cfg, kind) {
       html: emailShell("New booking — turnover", `${summaryTable(d, cfg)}<p style="margin:14px 0 0;font-size:13px;color:${BRAND.muted}">Please schedule the cleaning around the check-out time above.</p>`, cfg),
       text: `New booking at ${cfg.propertyName}: check-in ${niceDate(d.checkIn)} ${cfg.checkInTime || ""}, check-out ${niceDate(d.checkOut)} ${cfg.checkOutTime || ""}. Schedule cleaning.`,
     },
-    sms: `New booking at ${cfg.propertyName || "the rental"}: check-in ${niceDate(d.checkIn)} ${cfg.checkInTime || ""}, check-out ${niceDate(d.checkOut)} ${cfg.checkOutTime || ""}. Please schedule cleaning.`,
+    sms: smsJoin(
+      `New booking at ${cfg.propertyName || "the rental"} — turnover needed.`,
+      [
+        `Guest: ${d.guestName || "Guest"}`,
+        `Check-in: ${niceDate(d.checkIn)}${cfg.checkInTime ? ` at ${cfg.checkInTime}` : ""}`,
+        `Check-out: ${niceDate(d.checkOut)}${cfg.checkOutTime ? ` at ${cfg.checkOutTime}` : ""}`,
+      ].join("\n"),
+      `Please schedule the cleaning around the check-out time above.`,
+      footer(cfg)
+    ),
   };
 }
 
