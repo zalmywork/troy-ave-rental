@@ -342,7 +342,8 @@ function Lightbox({photos,index,setIndex,onClose}){
 }
 
 /* ── Calendar ── */
-function Cal({ month, year, bookings, pricing, config, onDateClick, selStart, selEnd, mode }) {
+function Cal({ month, year, bookings, pricing, config, onDateClick, selStart, selEnd, mode, minNights, selected }) {
+  minNights = minNights || {};
   const firstDay = new Date(year, month, 1).getDay();
   const dim = new Date(year, month+1, 0).getDate();
   const today = fmt(new Date());
@@ -361,9 +362,12 @@ function Cal({ month, year, bookings, pricing, config, onDateClick, selStart, se
           const ds = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
           const booked = bookings.some(b=>b.status!=="cancelled" && ds>=b.checkIn && ds<b.checkOut);
           const price = nightPrice(ds, pricing, config);
+          const customPrice = pricing[ds]!=null && pricing[ds]!=="";
+          const mnOverride = (minNights[ds]!=null && minNights[ds]!=="") ? Number(minNights[ds]) : null;
           const isSel = selStart && selEnd && ds>=selStart && ds<=selEnd;
           const isStart = ds===selStart;
           const isEnd = ds===selEnd;
+          const isPick = mode==="price" && !!(selected && selected.has(ds));
           const past = ds<today;
           const isToday = ds===today;
           const disabled = past || (booked && mode==="guest");
@@ -371,14 +375,18 @@ function Cal({ month, year, bookings, pricing, config, onDateClick, selStart, se
           let bg="transparent",color=P.text,fw=500,deco="none",radius=10,border="1.5px solid transparent";
           if(past){ color=P.faint; deco= mode==="guest"?"line-through":"none"; }
           else if(booked){ color=P.faint; deco= mode==="guest"?"line-through":"none"; bg= mode==="guest"?"transparent":P.reservedLt; if(mode!=="guest"){color=P.reserved;fw=600;} }
+          if(mode==="price" && customPrice && !past && !isPick){ border=`1.5px solid ${P.accent}`; }
           if(isSel){ bg=P.accentLt; color=P.accent; fw=700; }
           if(isStart||isEnd){ bg=P.text; color="#fff"; fw=700; }
-          if(isToday && !isStart && !isEnd){ border=`1.5px solid ${P.text}`; }
+          if(isPick){ bg=P.accent; color="#fff"; fw=700; border=`1.5px solid ${P.accent}`; }
+          if(isToday && !isStart && !isEnd && !isPick){ border=`1.5px solid ${P.text}`; }
 
           return (
-            <div key={ds} className={!disabled?"gcell":""} onClick={()=>!disabled&&onDateClick(ds)} style={{textAlign:"center",borderRadius:radius,background:bg,color,border,cursor:disabled?"default":"pointer",transition:"transform .12s ease, background .12s",minHeight:mode==="guest"?52:42,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontWeight:fw,position:"relative"}}>
+            <div key={ds} className={!disabled?"gcell":""} onClick={()=>!disabled&&onDateClick(ds)} style={{textAlign:"center",borderRadius:radius,background:bg,color,border,cursor:disabled?"default":"pointer",transition:"transform .12s ease, background .12s",minHeight:mode==="guest"||mode==="price"?52:42,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontWeight:fw,position:"relative"}}>
               <span style={{fontSize:14,lineHeight:1.1,textDecoration:deco}}>{day}</span>
               {!disabled && !booked && price>0 && mode==="guest" && <span style={{fontSize:10,color:isStart||isEnd?"rgba(255,255,255,.85)":P.muted,fontWeight:500,marginTop:3}}>${price}</span>}
+              {mode==="price" && !past && price>0 && <span style={{fontSize:10.5,color:isPick?"rgba(255,255,255,.9)":(customPrice?P.accent:P.muted),fontWeight:customPrice?700:500,marginTop:2}}>${price}</span>}
+              {mode==="price" && !past && mnOverride>1 && <span style={{fontSize:8.5,color:isPick?"rgba(255,255,255,.9)":P.accentDk,fontWeight:700,lineHeight:1.1}}>min {mnOverride}</span>}
               {booked && mode!=="guest" && <span style={{fontSize:8,color:P.reserved,marginTop:1}}>●</span>}
             </div>
           );
@@ -441,6 +449,9 @@ function App() {
   const [ms, setMs] = useState("");
   const [me, setMe] = useState("");
   const [mn, setMn] = useState("");
+  const [priceSel, setPriceSel] = useState(()=>new Set()); // dates selected in the pricing calendar
+  const [bulkPrice, setBulkPrice] = useState("");
+  const [bulkMin, setBulkMin] = useState("");
   const [photoUrl, setPhotoUrl] = useState("");
   // expense entry (metrics tab)
   const [exDate, setExDate] = useState("");
@@ -623,6 +634,48 @@ function App() {
     const m={...minNights};let d=parseD(ms);const end=parseD(me);
     while(d<=end){m[fmt(d)]=Math.max(1,Number(mn)||1);d=addDays(d,1);}
     sMinNights(m);setMs("");setMe("");setMn("");
+  };
+
+  // ── pricing calendar (Airbnb-style multi-select) ──
+  const togglePriceSel = (ds)=>setPriceSel(s=>{ const n=new Set(s); n.has(ds)?n.delete(ds):n.add(ds); return n; });
+  const clearPriceSel = ()=>setPriceSel(new Set());
+  const selectMonthDates = ()=>setPriceSel(s=>{ const n=new Set(s); const today=fmt(new Date()); const dim=new Date(yr,mo+1,0).getDate(); for(let d=1;d<=dim;d++){ const ds=`${yr}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; if(ds>=today) n.add(ds); } return n; });
+  // Apply the entered price and/or min-nights to every selected date (blank field = leave unchanged).
+  const applyBulk = ()=>{
+    if(priceSel.size===0) return;
+    const price = bulkPrice==="" ? null : Number(bulkPrice)||0;
+    const min = bulkMin==="" ? null : Math.max(1, Number(bulkMin)||1);
+    if(price==null && min==null) return;
+    if(price!=null){ const p={...pricing}; priceSel.forEach(ds=>p[ds]=price); sPricing(p); }
+    if(min!=null){ const m={...minNights}; priceSel.forEach(ds=>m[ds]=min); sMinNights(m); }
+    setBulkPrice("");setBulkMin("");setPriceSel(new Set());
+  };
+  // Clear any custom price + min-nights on the selected dates (back to the defaults).
+  const resetSel = ()=>{
+    if(priceSel.size===0) return;
+    const p={...pricing}, m={...minNights};
+    priceSel.forEach(ds=>{ delete p[ds]; delete m[ds]; });
+    sPricing(p); sMinNights(m); setPriceSel(new Set());
+  };
+  // Group the custom-priced / min-night dates into consecutive ranges for a readable summary.
+  const customRanges = useMemo(()=>{
+    const keys = new Set([...Object.keys(pricing||{}), ...Object.keys(minNights||{})]);
+    const dates = [...keys].filter(k=>((pricing[k]!=null&&pricing[k]!=="")||(minNights[k]!=null&&minNights[k]!==""))).sort();
+    const groups=[];
+    for(const ds of dates){
+      const price=(pricing[ds]!=null&&pricing[ds]!=="")?Number(pricing[ds]):null;
+      const min=(minNights[ds]!=null&&minNights[ds]!=="")?Number(minNights[ds]):null;
+      const last=groups[groups.length-1];
+      if(last && last.price===price && last.min===min && fmt(addDays(parseD(last.end),1))===ds){ last.end=ds; }
+      else groups.push({start:ds,end:ds,price,min});
+    }
+    return groups;
+  },[pricing,minNights]);
+  const removeRange = (g)=>{
+    const p={...pricing}, m={...minNights};
+    let d=parseD(g.start); const end=parseD(g.end);
+    while(d<=end){ const ds=fmt(d); delete p[ds]; delete m[ds]; d=addDays(d,1); }
+    sPricing(p); sMinNights(m);
   };
 
   // Accept a request into Bookings as "pending" — no guest notice yet. From the
@@ -1191,37 +1244,43 @@ function App() {
               </div>
             </div>
             <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
-              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 4px"}}>Custom Date Pricing</h3>
-              <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Override the nightly rate for specific date ranges (weekends, holidays, peak season).</p>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr auto",gap:10,alignItems:"end"}}>
-                <Inp label="Start Date" value={ps} onChange={setPs} type="date" />
-                <Inp label="End Date" value={pe} onChange={setPe} type="date" />
-                <Inp label="Price/Night ($)" value={pa} onChange={setPa} type="number" />
-                <Btn onClick={applyPrice} v="dark" sx={{marginBottom:14}}>Apply</Btn>
+              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 4px"}}>Custom pricing &amp; minimum stays</h3>
+              <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Tap the nights you want on the calendar, then set a price and/or a minimum stay for them. Custom-priced nights show in <span style={{color:P.accent,fontWeight:700}}>orange</span>, and “min N” marks a minimum-stay override.</p>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                <button onClick={prevMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:34,height:34,cursor:"pointer",fontSize:15}}>‹</button>
+                <h4 style={{fontFamily:FD,fontSize:17,fontWeight:700,margin:0}}>{MONTHS[mo]} {yr}</h4>
+                <button onClick={nextMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:34,height:34,cursor:"pointer",fontSize:15}}>›</button>
               </div>
-              {Object.keys(pricing).length>0 && (
-                <div style={{marginTop:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{fontSize:13,color:P.muted}}>{Object.keys(pricing).length} custom-priced dates</span>
-                  <Btn v="ghost" small onClick={()=>sPricing({})}>Clear All</Btn>
-                </div>
-              )}
-            </div>
-            <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`,marginTop:16}}>
-              <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 4px"}}>Seasonal Minimum Nights</h3>
-              <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Require a longer minimum stay for specific date ranges (holidays, peak season). The default minimum above applies everywhere else. Guests can't request a stay shorter than the minimum for the dates they pick.</p>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr auto",gap:10,alignItems:"end"}}>
-                <Inp label="Start Date" value={ms} onChange={setMs} type="date" />
-                <Inp label="End Date" value={me} onChange={setMe} type="date" />
-                <Inp label="Min Nights" value={mn} onChange={setMn} type="number" placeholder="2" />
-                <Btn onClick={applyMinNights} v="dark" sx={{marginBottom:14}}>Apply</Btn>
+              <Cal month={mo} year={yr} bookings={bookings} pricing={pricing} minNights={minNights} config={config} onDateClick={togglePriceSel} selected={priceSel} selStart={null} selEnd={null} mode="price" />
+              <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginTop:14,paddingTop:14,borderTop:`1px solid ${P.borderLt}`}}>
+                <span style={{fontSize:14,fontWeight:700}}>{priceSel.size} night{priceSel.size!==1?"s":""} selected</span>
+                <Btn v="ghost" small onClick={selectMonthDates}>Select whole month</Btn>
+                {priceSel.size>0 && <Btn v="ghost" small onClick={clearPriceSel}>Clear selection</Btn>}
               </div>
-              {Object.keys(minNights).length>0 && (
-                <div style={{marginTop:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{fontSize:13,color:P.muted}}>{Object.keys(minNights).length} dates with a custom minimum</span>
-                  <Btn v="ghost" small onClick={()=>sMinNights({})}>Clear All</Btn>
-                </div>
-              )}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto auto",gap:10,alignItems:"end",marginTop:12,opacity:priceSel.size?1:.5,pointerEvents:priceSel.size?"auto":"none"}}>
+                <Inp label="Price / night ($)" value={bulkPrice} onChange={setBulkPrice} type="number" placeholder="e.g. 350" />
+                <Inp label="Min nights" value={bulkMin} onChange={setBulkMin} type="number" placeholder="e.g. 3" />
+                <Btn onClick={applyBulk} v="dark" sx={{marginBottom:14}}>Apply</Btn>
+                <Btn onClick={resetSel} v="outline" sx={{marginBottom:14}}>Reset to default</Btn>
+              </div>
             </div>
+            {customRanges.length>0 && (
+              <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`,marginTop:16}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:0}}>Your custom rates</h3>
+                  <Btn v="ghost" small onClick={()=>{ if(confirm("Remove ALL custom prices and minimum-stay overrides?")){ sPricing({}); sMinNights({}); } }}>Clear all</Btn>
+                </div>
+                {customRanges.map((g,i)=>(
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderTop:i?`1px solid ${P.borderLt}`:"none"}}>
+                    <div>
+                      <div style={{fontSize:14,fontWeight:600}}>{g.start===g.end?fmtNice(g.start):`${fmtNice(g.start)} – ${fmtNice(g.end)}`}</div>
+                      <div style={{fontSize:13,color:P.muted,marginTop:2}}>{g.price!=null?`${money(g.price)}/night`:"default price"}{g.min!=null?` · min ${g.min} night${g.min!==1?"s":""}`:""}</div>
+                    </div>
+                    <Btn v="ghost" small onClick={()=>removeRange(g)}>Remove</Btn>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
