@@ -53,6 +53,7 @@ const defaultConfig = {
   checkInTime: "15:00",
   checkOutTime: "11:00",
   defaultNightlyRate: 0,
+  weekendNightlyRate: 0, // Fri & Sat nights; 0 = same rate all week
   defaultMinNights: 1,
   cleaningFee: 0,
   depositAmount: 0,
@@ -95,7 +96,16 @@ const daysBetween = (a, b) => Math.round((b - a) / 86400000);
 const money = (n) => n != null && n !== "" ? `$${Number(n).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:0})}` : "";
 const fmtNice = (s) => { const d = parseD(s); return d.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"}); };
 const fmtShort = (s) => { const d = parseD(s); return d.toLocaleDateString("en-US",{month:"short",day:"numeric"}); };
-const nightPrice = (ds, pricing, config) => (pricing[ds]!=null && pricing[ds]!=="") ? Number(pricing[ds]) : (Number(config.defaultNightlyRate)||0);
+// A "weekend night" is the night you sleep there: Friday night and Saturday
+// night (so a Fri–Sun stay is two weekend nights, and Sunday night is not one).
+const isWeekendNight = (ds) => { const w = parseD(ds).getDay(); return w===5 || w===6; };
+// Precedence: custom date override → weekend rate (if set) → weeknight rate.
+const nightPrice = (ds, pricing, config) => {
+  if (pricing[ds]!=null && pricing[ds]!=="") return Number(pricing[ds]);
+  const wknd = Number(config.weekendNightlyRate)||0;
+  if (wknd>0 && isWeekendNight(ds)) return wknd;
+  return Number(config.defaultNightlyRate)||0;
+};
 
 const gcalUrl = (title, start, end, loc, det) => {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${start.replace(/-/g,"")}/${end.replace(/-/g,"")}&location=${encodeURIComponent(loc||"")}&details=${encodeURIComponent(det||"")}`;
@@ -580,6 +590,10 @@ function App() {
   const discAmt = Math.round(nightsSubtotal * discPct);
   const total = nightsSubtotal - discAmt + (Number(config.cleaningFee)||0);
   const avgNight = nights>0 ? Math.round(nightsSubtotal/nights) : (Number(config.defaultNightlyRate)||0);
+  // With a separate weekend rate, the headline price before dates are picked is
+  // a starting price, so label it "From".
+  const rateVaries = (Number(config.weekendNightlyRate)||0)>0
+    && Number(config.weekendNightlyRate) !== Number(config.defaultNightlyRate);
   // Minimum-night stays: a global default, overridable per-date for peak seasons.
   const nightMin = (ds)=> (minNights[ds]!=null && minNights[ds]!=="") ? Number(minNights[ds]) : (Number(config.defaultMinNights)||1);
   // For a selected range, the required minimum is the largest minimum of any night in it.
@@ -766,7 +780,7 @@ function App() {
         {!selA || !selB ? (
           <div>
             <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:4}}>
-              {avgNight>0 ? <><span style={{fontSize:22,fontWeight:700}}>{money(avgNight)}</span><span style={{fontSize:15,color:P.muted}}>/ night</span></>
+              {avgNight>0 ? <>{rateVaries && <span style={{fontSize:15,color:P.muted}}>From</span>}<span style={{fontSize:22,fontWeight:700}}>{money(avgNight)}</span><span style={{fontSize:15,color:P.muted}}>/ night</span></>
               : <span style={{fontSize:18,fontWeight:700}}>Select dates for pricing</span>}
             </div>
             <p style={{fontSize:14,color:P.muted,marginTop:10}}>Tap dates on the calendar to see your total and request a booking.</p>
@@ -926,7 +940,7 @@ function App() {
             <div>
               {selA&&selB
                 ? <><div style={{fontSize:17,fontWeight:700}}>{money(total)} <span style={{fontSize:13,fontWeight:400,color:P.muted}}>total</span></div><div style={{fontSize:12,color:P.muted,textDecoration:"underline"}}>{fmtShort(selA)} – {fmtShort(selB)}</div></>
-                : avgNight>0 ? <><div style={{fontSize:17,fontWeight:700}}>{money(avgNight)} <span style={{fontSize:13,fontWeight:400,color:P.muted}}>/ night</span></div><div style={{fontSize:12,color:P.muted}}>Add dates</div></>
+                : avgNight>0 ? <><div style={{fontSize:17,fontWeight:700}}>{rateVaries && <span style={{fontSize:13,fontWeight:400,color:P.muted}}>From </span>}{money(avgNight)} <span style={{fontSize:13,fontWeight:400,color:P.muted}}>/ night</span></div><div style={{fontSize:12,color:P.muted}}>Add dates</div></>
                 : <div style={{fontSize:15,fontWeight:600}}>Select dates</div>}
             </div>
             <Btn v="gradient" disabled={!selA||!selB||!minOk} onClick={()=>setBkModal(true)} sx={{whiteSpace:"nowrap"}}>{!selA||!selB?"Select dates":(minOk?"Request":`Min ${stayMin} nights`)}</Btn>
@@ -1235,9 +1249,10 @@ function App() {
           <div>
             <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`,marginBottom:16}}>
               <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 6px"}}>Default Pricing</h3>
-              <p style={{fontSize:13,color:P.muted,margin:"0 0 18px"}}>The nightly rate shows under every available date on the guest calendar.</p>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12}}>
-                <Inp label="Nightly Rate ($)" value={config.defaultNightlyRate} onChange={v=>sConfig({...config,defaultNightlyRate:Number(v)||0})} type="number" />
+              <p style={{fontSize:13,color:P.muted,margin:"0 0 18px"}}>Each night's rate shows under its date on the guest calendar. <b>Weeknight</b> covers Sunday–Thursday nights; <b>weekend</b> covers Friday &amp; Saturday nights. Leave the weekend rate at 0 to charge the same price all week.</p>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:12}}>
+                <Inp label="Weeknight Rate ($)" value={config.defaultNightlyRate} onChange={v=>sConfig({...config,defaultNightlyRate:Number(v)||0})} type="number" />
+                <Inp label="Weekend Rate ($)" value={config.weekendNightlyRate} onChange={v=>sConfig({...config,weekendNightlyRate:Number(v)||0})} type="number" placeholder="0" />
                 <Inp label="Cleaning Fee ($)" value={config.cleaningFee} onChange={v=>sConfig({...config,cleaningFee:Number(v)||0})} type="number" />
                 <Inp label="Deposit ($)" value={config.depositAmount} onChange={v=>sConfig({...config,depositAmount:Number(v)||0})} type="number" />
                 <Inp label="Min Nights" value={config.defaultMinNights} onChange={v=>sConfig({...config,defaultMinNights:Math.max(1,Number(v)||1)})} type="number" />
@@ -1245,7 +1260,7 @@ function App() {
             </div>
             <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
               <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 4px"}}>Custom pricing &amp; minimum stays</h3>
-              <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Tap the nights you want on the calendar, then set a price and/or a minimum stay for them. Custom-priced nights show in <span style={{color:P.accent,fontWeight:700}}>orange</span>, and “min N” marks a minimum-stay override.</p>
+              <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>Tap the nights you want on the calendar, then set a price and/or a minimum stay for them. A custom price overrides both the weeknight and weekend rates. Custom-priced nights show in <span style={{color:P.accent,fontWeight:700}}>orange</span>, and “min N” marks a minimum-stay override.</p>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                 <button onClick={prevMo} style={{background:"none",border:`1px solid ${P.border}`,borderRadius:"50%",width:34,height:34,cursor:"pointer",fontSize:15}}>‹</button>
                 <h4 style={{fontFamily:FD,fontSize:17,fontWeight:700,margin:0}}>{MONTHS[mo]} {yr}</h4>
