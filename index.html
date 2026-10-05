@@ -80,7 +80,7 @@ const withDefaults = (c) => {
 // Length-of-stay discounts (longest threshold first). Applied automatically to
 // the nightly subtotal and advertised on the guest page.
 const LOS_DISCOUNTS = [
-  { nights: 14, pct: 0.25 },
+  { nights: 14, pct: 0.20 },
   { nights: 7,  pct: 0.10 },
 ];
 const stayDiscountPct = (nights) => {
@@ -463,6 +463,7 @@ function App() {
   const [bulkPrice, setBulkPrice] = useState("");
   const [bulkMin, setBulkMin] = useState("");
   const [photoUrl, setPhotoUrl] = useState("");
+  const [showPast, setShowPast] = useState(false); // toggle for past bookings
   // expense entry (metrics tab)
   const [exDate, setExDate] = useState("");
   const [exCat, setExCat] = useState("Cleaning");
@@ -899,7 +900,7 @@ function App() {
               <p style={{fontSize:14,color:P.muted,margin:"0 0 14px"}}>{selA&&selB?`${fmtNice(selA)} – ${fmtNice(selB)}`:"Prices shown are per night. Tap a start and end date."}</p>
               <div style={{display:"flex",alignItems:"center",gap:8,background:P.okLt,color:P.ok,borderRadius:12,padding:"10px 14px",fontSize:13,fontWeight:600,marginBottom:18}}>
                 <span style={{fontSize:16}}>💸</span>
-                <span>Stay longer, save more — <strong>10% off 7+ nights</strong> · <strong>25% off 14+ nights</strong>. Applied automatically.</span>
+                <span>Stay longer, save more — <strong>10% off 7+ nights</strong> · <strong>20% off 14+ nights</strong>. Applied automatically.</span>
               </div>
               <div style={{border:`1px solid ${P.borderLt}`,borderRadius:16,padding:isMobile?16:24}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -1169,7 +1170,11 @@ function App() {
               <Btn onClick={openNew} small>+ Add Booking</Btn>
             </div>
             {bookings.length===0 && <p style={{color:P.muted,fontSize:14,background:P.card,borderRadius:14,padding:24,textAlign:"center",border:`1px solid ${P.borderLt}`}}>No bookings yet. Add one to get started.</p>}
-            {[...bookings].sort((a,b)=>a.checkIn.localeCompare(b.checkIn)).map(b=>{
+            {(()=>{
+              const todayS = fmt(new Date());
+              const active = [...bookings].filter(x=>x.checkOut>=todayS).sort((a,b)=>a.checkIn.localeCompare(b.checkIn));
+              const past = [...bookings].filter(x=>x.checkOut<todayS).sort((a,b)=>b.checkIn.localeCompare(a.checkIn));
+              const card = (b)=>{
               const cancelled = b.status==="cancelled";
               return (
               <div key={b.id} onClick={()=>openEdit(b)} style={{background:P.card,borderRadius:14,padding:20,marginBottom:10,border:`1px solid ${P.borderLt}`,cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,0.03)",opacity:cancelled?.62:1}}>
@@ -1216,7 +1221,18 @@ function App() {
                 </div>
               </div>
               );
-            })}
+              };
+              return (<>
+                {active.map(card)}
+                {bookings.length>0 && active.length===0 && <p style={{color:P.muted,fontSize:14,background:P.card,borderRadius:14,padding:20,textAlign:"center",border:`1px solid ${P.borderLt}`}}>No upcoming bookings.</p>}
+                {past.length>0 && (
+                  <div style={{marginTop:18}}>
+                    <button onClick={()=>setShowPast(s=>!s)} style={{background:"none",border:"none",fontFamily:F,fontSize:14,fontWeight:700,color:P.muted,cursor:"pointer",padding:"8px 0",display:"flex",alignItems:"center",gap:6}}>{showPast?"▾":"▸"} Past bookings ({past.length})</button>
+                    {showPast && <div style={{marginTop:10}}>{past.map(card)}</div>}
+                  </div>
+                )}
+              </>);
+            })()}
             <Modal open={bkOpen} onClose={()=>{setBkOpen(false);setEditId(null);}} title={editId?"Edit Booking":"New Booking"} wide>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>
                 <Inp label="Guest Name" value={bf.guestName} onChange={v=>setBf(f=>({...f,guestName:v}))} placeholder="Jane Smith" />
