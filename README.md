@@ -72,15 +72,15 @@ won't respond locally unless you run `vercel dev` with the env vars below.
 | --- | --- |
 | Default photos (`DEFAULT_PHOTOS`) | 39 |
 | Default property config — rates, times, PINs, host name (`defaultConfig`) | 48 |
-| Length-of-stay discounts: 7 nights 10%, 14 nights 25% (`LOS_DISCOUNTS`) | 83 |
+| Length-of-stay discounts: 7 nights 10%, 14 nights 20% (`LOS_DISCOUNTS`) | 83 |
 | localStorage + Sheet sync, session, booking lookup | 115 |
 | Colors and fonts (`P`, `F`, `FD`, `FH`) | 225 |
 | Shared UI pieces — Modal, Input, Button, Gallery, Lightbox, Calendar | 239–450 |
 | Main app state (`function App()`) | 454 |
-| PIN login screen | 841 |
-| Guest-facing site | 856 |
-| Cleaning view | 1126 |
-| Admin dashboard and its tab list | 1174 |
+| PIN login screen | 842 |
+| Guest-facing site | 857 |
+| Cleaning view | 1127 |
+| Admin dashboard and its tab list | 1175 |
 
 The admin tabs are Property, Calendar, Bookings, Pricing, Requests, Messages,
 Metrics, Guide and Settings. Each one is a `{aTab==="…" && (…)}` block under the
