@@ -58,6 +58,7 @@ const defaultConfig = {
   cleaningFee: 0,
   depositAmount: 0,
   guestGuide: "",
+  guideLeadDays: 2, // the guide opens this many days before check-in (see lib/access.js)
   adminPin: "1234",
   cleaningPin: "0000",
   hostName: "Ari",
@@ -121,13 +122,45 @@ function load(key, fallback) {
 function save(key, val) {
   try { localStorage.setItem("str_"+key, JSON.stringify(val)); } catch(e) { console.error(e); }
 }
-// Pull the full state from the Sheet. Returns null if the backend isn't reachable.
+// Admin / cleaning session. The PIN is checked on the server, which returns a
+// signed token; we keep it in memory only (a reload or "← View Site" logs out)
+// and send it with every Sheet read/write. Without it the API returns only the
+// public view: no guide, PINs, or guest details.
+let _session = "", _sessionRole = "";
+const authHeaders = () => _session ? { "X-Session": _session } : {};
+async function remoteLogin(role, pin) {
+  try {
+    const r = await fetch("/api/sheet", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ action:"login", role, pin }) });
+    if (r.status===401) return { error:"Incorrect PIN" };
+    if (!r.ok) return { error:"Couldn't reach the server. Try again." };
+    const d = await r.json();
+    _session = d.session; _sessionRole = role; _writeWarned = false;
+    return { ok:true };
+  } catch { return { error:"Couldn't reach the server. Try again." }; }
+}
+function remoteLogout() { _session = ""; _sessionRole = ""; }
+// Pull state from the Sheet (as much as this session may see). Returns null if
+// the backend isn't reachable, or if the answer is for a different role than
+// we're signed in as (e.g. the session expired), so it never clobbers admin state.
 async function remoteLoadAll() {
   try {
-    const r = await fetch("/api/sheet", { method:"GET" });
+    const role = _sessionRole || "public";
+    const r = await fetch("/api/sheet", { method:"GET", headers: authHeaders() });
     if (!r.ok) return null;
-    return await r.json();
+    const d = await r.json();
+    if ((d._role||"public") !== role || (_sessionRole||"public") !== role) return null;
+    return d;
   } catch { return null; }
+}
+// Guest portal: look up a booking by code. The server decides whether the
+// entrance guide is open for it (confirmed + within its dates).
+async function remoteLookup(code) {
+  try {
+    const r = await fetch("/api/booking", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ code }) });
+    if (r.status===404) return { error:"notfound" };
+    if (!r.ok) return { error:"server" };
+    return await r.json();
+  } catch { return { error:"server" }; }
 }
 // Remote writes are SERIALIZED through one queue. The backend does a
 // read-modify-write of the whole sheet per POST, so two concurrent writes
@@ -135,15 +168,24 @@ async function remoteLoadAll() {
 // Chaining them guarantees each write sees the previous one's result.
 let _writeChain = Promise.resolve();
 let _pendingWrites = 0;
+let _writeWarned = false;
 function _enqueueWrite(body) {
   _pendingWrites++;
   _writeChain = _writeChain.then(async () => {
     try {
-      await fetch("/api/sheet", {
+      const r = await fetch("/api/sheet", {
         method:"POST",
-        headers:{ "Content-Type":"application/json" },
+        headers:{ "Content-Type":"application/json", ...authHeaders() },
         body: JSON.stringify(body),
       });
+      const d = await r.json().catch(()=>({}));
+      // Changing the admin PIN ends sessions made with the old one, so the
+      // server hands this one a fresh token.
+      if (r.ok && d.session) _session = d.session;
+      if (!r.ok && (r.status===401 || r.status===409) && !_writeWarned) {
+        _writeWarned = true;
+        alert("That change was NOT saved — your admin session has ended. Go back to the site and log in again.");
+      }
     } catch(e) { console.error("remoteWrite", e); }
     finally { _pendingWrites--; }
   });
@@ -158,7 +200,7 @@ function remoteAddMessage(message) { _enqueueWrite({ action:"addMessage", messag
 function notify(kind, data) {
   return fetch("/api/notify", {
     method:"POST",
-    headers:{ "Content-Type":"application/json" },
+    headers:{ "Content-Type":"application/json", ...authHeaders() },
     body: JSON.stringify({ kind, data }),
   }).catch(e=>{ console.error("notify",e); return null; });
 }
@@ -168,7 +210,7 @@ function genCode() {
   let s = ""; for (let i=0;i<5;i++) s += A[Math.floor(Math.random()*A.length)];
   return "TRA-" + s;
 }
-const TEST_CODE = "TEST1234"; // always-valid code for testing the guest portal
+// TEST1234 is an always-valid code for trying the guest portal; /api/booking handles it.
 
 function useIsMobile(bp=820){
   const [m,setM]=useState(typeof window!=="undefined" && window.innerWidth<bp);
@@ -436,13 +478,16 @@ function App() {
   const [gPhone, setGPhone] = useState("");
   const [gNotes, setGNotes] = useState("");
   const [sent, setSent] = useState(false);
-  const [guideOpen, setGuideOpen] = useState(false);
   const [lbIndex, setLbIndex] = useState(null);
+  const [loginBusy, setLoginBusy] = useState(false);
 
-  // guest booking portal ("My Booking" — enter code → guide + message owner)
+  // guest booking portal ("My Booking" — enter code → guide + message owner).
+  // The lookup runs on the server; the guide only comes back while it's open.
   const [portalOpen, setPortalOpen] = useState(false);
   const [codeInput, setCodeInput] = useState("");
   const [portalBk, setPortalBk] = useState(null); // matched booking, or sample for TEST code
+  const [portalGuide, setPortalGuide] = useState(null); // {state, opens, closes, text?}
+  const [portalBusy, setPortalBusy] = useState(false);
   const [codeErr, setCodeErr] = useState("");
   const [msgText, setMsgText] = useState("");
   const [msgSent, setMsgSent] = useState(false);
@@ -489,19 +534,24 @@ function App() {
   // without a manual refresh. Skips while local writes are still flushing so it
   // never overwrites un-saved changes.
   const [synced, setSynced] = useState(false);
+  const applyRemote = useCallback((d)=>{
+    if(d.config)   { const c=withDefaults(d.config); setConfig(c); save("config",c); }
+    if(d.bookings) { setBookings(d.bookings); save("bookings",d.bookings); }
+    if(d.pricing)  { setPricing(d.pricing);  save("pricing",d.pricing); }
+    if(d.minNights){ setMinNights(d.minNights); save("minNights",d.minNights); }
+    if(d._role!=="admin"){
+      // Not signed in as admin: drop any admin-only data cached on this device.
+      setRequests([]); save("requests",[]); setExpenses([]); save("expenses",[]); setMessages([]); save("messages",[]);
+      return;
+    }
+    if(d.requests) { setRequests(d.requests); save("requests",d.requests); }
+    if(d.expenses) { setExpenses(d.expenses); save("expenses",d.expenses); }
+    if(d.messages) { setMessages(d.messages); save("messages",d.messages); }
+  },[]);
   const syncFromSheet = useCallback((mark)=>{
     if(remoteHasPending()) return;
-    remoteLoadAll().then(d=>{
-      if(!d) return;
-      if(d.config)   { const c=withDefaults(d.config); setConfig(c); save("config",c); }
-      if(d.bookings) { setBookings(d.bookings); save("bookings",d.bookings); }
-      if(d.pricing)  { setPricing(d.pricing);  save("pricing",d.pricing); }
-      if(d.minNights){ setMinNights(d.minNights); save("minNights",d.minNights); }
-      if(d.requests) { setRequests(d.requests); save("requests",d.requests); }
-      if(d.expenses) { setExpenses(d.expenses); save("expenses",d.expenses); }
-      if(d.messages) { setMessages(d.messages); save("messages",d.messages); }
-    }).finally(()=>{ if(mark) setSynced(true); });
-  },[]);
+    remoteLoadAll().then(d=>{ if(d) applyRemote(d); }).finally(()=>{ if(mark) setSynced(true); });
+  },[applyRemote]);
   useEffect(()=>{
     syncFromSheet(true);
     const iv = setInterval(()=>syncFromSheet(false), 25000);
@@ -713,19 +763,27 @@ function App() {
     setSent(true);setGName("");setGEmail("");setGPhone("");setGNotes("");setSelA(null);setSelB(null);
   };
 
-  // guest portal: look up a booking by its code (TEST_CODE opens a sample)
-  const lookupCode = ()=>{
-    const code = codeInput.trim().toUpperCase();
-    if(!code) return;
-    if(code===TEST_CODE){
-      setPortalBk({code:TEST_CODE,guestName:"Test Guest",checkIn:fmt(new Date()),checkOut:fmt(addDays(new Date(),3)),totalPrice:"",_test:true});
-      setCodeErr("");setMsgSent(false);setMsgErr("");return;
+  // guest portal: look up a booking by its code on the server (TEST1234 opens a
+  // sample). The guide text only comes back while it's open for that booking.
+  const lookupCode = async (raw)=>{
+    const code = String(raw ?? codeInput).trim().toUpperCase();
+    if(!code||portalBusy) return;
+    setPortalBusy(true);setCodeErr("");
+    const r = await remoteLookup(code);
+    setPortalBusy(false);
+    if(r.error){
+      setPortalBk(null);setPortalGuide(null);
+      setCodeErr(r.error==="notfound"?"No booking found for that code. Double-check and try again.":"Couldn't reach the server. Please try again.");
+      return;
     }
-    const found = bookings.find(b=>(b.code||"").toUpperCase()===code);
-    if(found){ setPortalBk(found);setCodeErr("");setMsgSent(false);setMsgErr(""); }
-    else { setPortalBk(null);setCodeErr("No booking found for that code. Double-check and try again."); }
+    setPortalBk(r.booking);setPortalGuide(r.guide);setMsgSent(false);setMsgErr("");
   };
-  const closePortal = ()=>{ setPortalOpen(false);setCodeInput("");setPortalBk(null);setCodeErr("");setMsgText("");setMsgSent(false);setMsgErr(""); };
+  // Personal link from the confirmation email / reminders: /?booking=TRA-XXXXX
+  useEffect(()=>{
+    const c = new URLSearchParams(window.location.search).get("booking");
+    if(c){ setCodeInput(c); setPortalOpen(true); lookupCode(c); }
+  },[]);
+  const closePortal = ()=>{ setPortalOpen(false);setCodeInput("");setPortalBk(null);setPortalGuide(null);setCodeErr("");setMsgText("");setMsgSent(false);setMsgErr(""); };
   const sendMsg = async ()=>{
     if(!msgText.trim()||!portalBk) return;
     setMsgErr("");
@@ -745,10 +803,33 @@ function App() {
     }catch(e){ setMsgErr("Couldn't send right now. Please try again."); }
   };
 
-  const doLogin = ()=>{
-    const ok = loginTarget==="admin"?(config.adminPin||"1234"):(config.cleaningPin||"0000");
-    if(pin===ok){setView(loginTarget);setPin("");setPinErr("");}else setPinErr("Incorrect PIN");
+  // The PIN is checked by the server, which then sends this session the data
+  // its role may see. Only once that's loaded do we open the dashboard, so it
+  // never edits (and saves back) the stripped-down public copy.
+  const doLogin = async ()=>{
+    if(!pin||loginBusy) return;
+    setLoginBusy(true);setPinErr("");
+    const r = await remoteLogin(loginTarget, pin);
+    const d = r.ok ? await remoteLoadAll() : null;
+    setLoginBusy(false);
+    if(!r.ok){ setPinErr(r.error); return; }
+    if(!d){ remoteLogout(); setPinErr("Couldn't load your data. Try again."); return; }
+    applyRemote(d); setView(loginTarget); setPin("");
   };
+  // Leave the dashboard / cleaning view: let pending saves finish, then sign out
+  // and reload the public view.
+  const exitToSite = ()=>{
+    setView("guest");
+    _writeChain.then(()=>{ remoteLogout(); syncFromSheet(false); });
+  };
+  const guideUrl = (code)=>`${window.location.origin}/?booking=${encodeURIComponent(code||"")}`;
+  const copyGuideLink = (code)=>{
+    const u = guideUrl(code);
+    if(navigator.clipboard) navigator.clipboard.writeText(u).then(()=>alert("Guide link copied:\n"+u),()=>prompt("Copy the guide link:",u));
+    else prompt("Copy the guide link:",u);
+  };
+  // "YYYY-MM-DD HH:MM" (property time, from the server) → "Wed, Nov 12, 2026 at 11:00"
+  const fmtWhen = (s, withTime)=> s ? `${fmtNice(s.slice(0,10))}${withTime?` at ${s.slice(11)}`:""}` : "";
 
   const addPhoto = ()=>{if(!photoUrl)return;sConfig({...config,photos:[...(config.photos||[]),photoUrl]});setPhotoUrl("");};
   const rmPhoto = (i)=>{sConfig({...config,photos:config.photos.filter((_,j)=>j!==i)});};
@@ -767,7 +848,7 @@ function App() {
         <p style={{fontSize:14,color:P.muted,margin:"0 0 24px"}}>Enter your PIN to continue</p>
         <Inp value={pin} onChange={v=>{setPin(v);setPinErr("");}} type="password" placeholder="Enter PIN" />
         {pinErr && <p style={{color:P.accent,fontSize:13,margin:"-8px 0 12px"}}>{pinErr}</p>}
-        <Btn onClick={doLogin} sx={{width:"100%",marginBottom:10}} v={loginTarget==="admin"?"primary":"clean"}>{loginTarget==="admin"?"Enter Admin":"Enter Cleaning"}</Btn>
+        <Btn onClick={doLogin} disabled={!pin||loginBusy} sx={{width:"100%",marginBottom:10}} v={loginTarget==="admin"?"primary":"clean"}>{loginBusy?"Checking…":loginTarget==="admin"?"Enter Admin":"Enter Cleaning"}</Btn>
         <Btn onClick={()=>{setView("guest");setPin("");setPinErr("");}} v="ghost">← Back to site</Btn>
       </div>
     </div>
@@ -917,7 +998,6 @@ function App() {
               </div>
             </div>
 
-            {config.guestGuide && <div style={{marginTop:24}}><Btn onClick={()=>setGuideOpen(true)} v="outline" sx={{width:"100%"}}>🔑 View Guest Entrance Guide</Btn></div>}
             {isMobile && contactCard}
           </div>
 
@@ -927,7 +1007,7 @@ function App() {
               {reservationCard}
               <div style={{background:P.card,borderRadius:16,padding:24,marginTop:16,boxShadow:"0 6px 24px rgba(0,0,0,0.10)",border:`1px solid ${P.borderLt}`}}>
                 <div style={{fontSize:17,fontWeight:700,marginBottom:4}}>🔑 Already booked?</div>
-                <p style={{fontSize:14,color:P.muted,margin:"0 0 16px"}}>Enter your booking code to view your check-in guide and message the host.</p>
+                <p style={{fontSize:14,color:P.muted,margin:"0 0 16px"}}>Enter your booking code to see your stay and message the host. Your entrance guide unlocks here shortly before check-in.</p>
                 <Btn v="outline" onClick={()=>setPortalOpen(true)} sx={{width:"100%"}}>My Booking — enter your code</Btn>
               </div>
               {contactCard}
@@ -975,17 +1055,13 @@ function App() {
           )}
         </Modal>
 
-        <Modal open={guideOpen} onClose={()=>setGuideOpen(false)} title="🔑 Guest Entrance Guide">
-          <div style={{whiteSpace:"pre-wrap",fontSize:15,lineHeight:1.7}}>{config.guestGuide}</div>
-        </Modal>
-
         <Modal open={portalOpen} onClose={closePortal} title="🔑 My Booking">
           {!portalBk ? (
             <div>
-              <p style={{fontSize:14,color:P.muted,margin:"0 0 16px"}}>Enter the booking code from your confirmation to view your check-in guide and message the host.</p>
+              <p style={{fontSize:14,color:P.muted,margin:"0 0 16px"}}>Enter the booking code from your confirmation to see your stay and message the host. Confirmed guests can open their entrance guide here starting shortly before check-in.</p>
               <Inp label="Booking code" value={codeInput} onChange={v=>{setCodeInput(v);setCodeErr("");}} placeholder="TRA-XXXXX" sx={{textTransform:"uppercase",letterSpacing:1}} />
               {codeErr && <p style={{color:P.accent,fontSize:13,margin:"-6px 0 12px"}}>{codeErr}</p>}
-              <Btn onClick={lookupCode} disabled={!codeInput.trim()} sx={{width:"100%"}}>View my booking</Btn>
+              <Btn onClick={()=>lookupCode()} disabled={!codeInput.trim()||portalBusy} sx={{width:"100%"}}>{portalBusy?"Looking up…":"View my booking"}</Btn>
             </div>
           ) : (
             <div>
@@ -998,10 +1074,19 @@ function App() {
               </div>
 
               <div style={{marginBottom:18}}>
-                <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>🔑 Check-in guide</div>
-                {config.guestGuide
-                  ? <div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.7,background:P.card,border:`1px solid ${P.borderLt}`,borderRadius:12,padding:14}}>{config.guestGuide}</div>
-                  : <div style={{fontSize:14,color:P.muted}}>The host hasn't added a check-in guide yet.</div>}
+                <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>🔑 Entrance guide</div>
+                {(()=>{
+                  const g = portalGuide||{};
+                  const note = (t)=><div style={{fontSize:14,color:P.muted,lineHeight:1.6,background:P.surface,borderRadius:12,padding:14}}>{t}</div>;
+                  if(g.state==="open") return g.text
+                    ? <><div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.7,background:P.card,border:`1px solid ${P.borderLt}`,borderRadius:12,padding:14}}>{g.text}</div>
+                        <div style={{fontSize:12,color:P.muted,marginTop:6}}>Available until check-out, {fmtWhen(g.closes,true)}.</div></>
+                    : note(`${config.hostName||"The host"} hasn't added the entrance guide yet. Send a message below and we'll get it to you.`);
+                  if(g.state==="early") return note(`Your entrance guide (how to get in, Wi-Fi and house info) unlocks here on ${fmtWhen(g.opens)}. Bookmark this page or use the link in your confirmation.`);
+                  if(g.state==="ended") return note("This stay has ended, so the entrance guide is no longer available.");
+                  if(g.state==="cancelled") return note("This booking was cancelled.");
+                  return note("Your entrance guide will appear here once your booking is confirmed, starting shortly before check-in.");
+                })()}
               </div>
 
               <div>
@@ -1017,7 +1102,7 @@ function App() {
                 )}
               </div>
 
-              <Btn v="ghost" small onClick={()=>{setPortalBk(null);setCodeInput("");setMsgSent(false);}} sx={{width:"100%",marginTop:14}}>← Look up a different code</Btn>
+              <Btn v="ghost" small onClick={()=>{setPortalBk(null);setPortalGuide(null);setCodeInput("");setMsgSent(false);}} sx={{width:"100%",marginTop:14}}>← Look up a different code</Btn>
             </div>
           )}
         </Modal>
@@ -1050,7 +1135,7 @@ function App() {
               <h1 style={{fontFamily:FD,fontSize:24,fontWeight:700,margin:0}}>Cleaning Schedule</h1>
               <p style={{fontSize:13,opacity:.8,margin:"4px 0 0"}}>{config.propertyName} {config.address&&`· ${config.address}`}</p>
             </div>
-            <Btn v="outline" small onClick={()=>setView("guest")} sx={{background:"#fff"}}>← Exit</Btn>
+            <Btn v="outline" small onClick={exitToSite} sx={{background:"#fff"}}>← Exit</Btn>
           </div>
         </div>
         <div style={{maxWidth:700,margin:"0 auto",padding:20}}>
@@ -1107,7 +1192,7 @@ function App() {
           <div><h1 style={{fontFamily:FD,fontSize:22,fontWeight:700,margin:0,color:"#fff"}}>Admin Dashboard</h1><p style={{fontSize:12,color:"rgba(255,255,255,.85)",margin:"4px 0 0"}}>{config.propertyName}</p></div>
           <div style={{display:"flex",gap:8}}>
             <Btn v="outline" small onClick={()=>syncFromSheet(false)} sx={{background:"#fff"}}>↻ Refresh</Btn>
-            <Btn v="outline" small onClick={()=>setView("guest")} sx={{background:"#fff"}}>← View Site</Btn>
+            <Btn v="outline" small onClick={exitToSite} sx={{background:"#fff"}}>← View Site</Btn>
           </div>
         </div>
       </div>
@@ -1188,7 +1273,7 @@ function App() {
                 </div>
                 <div style={{fontSize:13,color:P.muted}}>{fmtNice(b.checkIn)} → {fmtNice(b.checkOut)} · {daysBetween(parseD(b.checkIn),parseD(b.checkOut))} nights {b.totalPrice?`· ${money(b.totalPrice)}`:""}</div>
                 {(b.guestEmail||b.guestPhone) && <div style={{fontSize:12.5,color:P.muted,marginTop:5}}>{b.guestEmail?`📧 ${b.guestEmail}`:""}{b.guestEmail&&b.guestPhone?"  ·  ":""}{b.guestPhone?`📞 ${b.guestPhone}`:""}</div>}
-                {b.code && <div style={{fontSize:12,marginTop:6,fontWeight:600,letterSpacing:.5}}>🔑 Code: <span style={{fontFamily:FD,background:P.cleanLt,padding:"2px 8px",borderRadius:6}}>{b.code}</span> <span style={{color:P.faint,fontWeight:400}}>· share with guest</span></div>}
+                {b.code && <div style={{fontSize:12,marginTop:6,fontWeight:600,letterSpacing:.5}}>🔑 Code: <span style={{fontFamily:FD,background:P.cleanLt,padding:"2px 8px",borderRadius:6}}>{b.code}</span> <span style={{color:P.faint,fontWeight:400}}>· share with guest</span> <button onClick={e=>{e.stopPropagation();copyGuideLink(b.code);}} title="Their personal link: opens the entrance guide only while this booking is confirmed and within its dates" style={{background:"none",border:"none",padding:0,marginLeft:6,fontFamily:F,fontSize:12,fontWeight:600,color:P.accentDk,textDecoration:"underline",cursor:"pointer"}}>Copy guide link</button></div>}
                 <div style={{marginTop:12,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}} onClick={e=>e.stopPropagation()}>
                   {cancelled ? (
                     <>
@@ -1468,7 +1553,14 @@ function App() {
         {aTab==="guide" && (
           <div style={{background:P.card,borderRadius:16,padding:28,border:`1px solid ${P.borderLt}`}}>
             <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 4px"}}>Guest Entrance Guide</h3>
-            <p style={{fontSize:13,color:P.muted,margin:"0 0 16px"}}>This will be shown to guests as their access instructions.</p>
+            <p style={{fontSize:13,color:P.muted,margin:"0 0 16px",lineHeight:1.6}}>Only <b>confirmed</b> guests can open this, during their own stay: with their booking code under “My Booking”, or from the personal link in their confirmation and check-in reminders (also under Bookings → Copy guide link). It is never on the public site and never sent in an email or text.</p>
+            <label style={{display:"block",marginBottom:16}}>
+              <span style={{fontSize:13,fontWeight:600,display:"block",marginBottom:6}}>Unlocks</span>
+              <select value={String(config.guideLeadDays??2)} onChange={e=>sConfig({...config,guideLeadDays:Number(e.target.value)})} style={{fontFamily:F,fontSize:15,padding:"11px 13px",border:`1px solid ${P.border}`,borderRadius:13,background:P.card,color:P.text}}>
+                {[[0,"On check-in day"],[1,"1 day before check-in"],[2,"2 days before check-in"],[3,"3 days before check-in"],[5,"5 days before check-in"],[7,"7 days before check-in"]].map(([n,l])=><option key={n} value={n}>{l}</option>)}
+              </select>
+              <span style={{fontSize:12,color:P.muted,display:"block",marginTop:6}}>From midnight that day. It stops working at check-out time ({config.checkOutTime||"11:00"}) on their check-out day, and right away if the booking is cancelled.</span>
+            </label>
             <Inp value={config.guestGuide} onChange={v=>sConfig({...config,guestGuide:v})} multi placeholder={"Enter access instructions...\n\nExample:\n1. The lockbox is on the front door\n2. Code is 4567\n3. Turn left after entry..."} />
           </div>
         )}
@@ -1498,7 +1590,7 @@ function App() {
               <h3 style={{fontFamily:FD,fontSize:20,fontWeight:700,margin:"0 0 20px"}}>Access PINs</h3>
               <Inp label="Admin PIN" value={config.adminPin} onChange={v=>sConfig({...config,adminPin:v})} placeholder="1234" />
               <Inp label="Cleaning PIN" value={config.cleaningPin} onChange={v=>sConfig({...config,cleaningPin:v})} placeholder="0000" />
-              <p style={{fontSize:12,color:P.muted,margin:"8px 0 0"}}>Share the cleaning PIN with your cleaning crew so they can view the schedule.</p>
+              <p style={{fontSize:12,color:P.muted,margin:"8px 0 0"}}>Share the cleaning PIN with your cleaning crew so they can view the schedule. Use at least 6 digits. Changing a PIN signs out everyone using the old one.</p>
             </div>
           </div>
         )}

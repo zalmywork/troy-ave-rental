@@ -25,11 +25,13 @@ terms.html      terms of service
 photos/         property photos, served at /photos/*
 vercel.json     one line of config: the daily cron schedule
 api/            serverless functions (Node, zero dependencies)
-  sheet.js        read/write all site data to the Google Sheet
+  sheet.js        read/write site data in the Google Sheet (per-role views, PIN login)
+  booking.js      guest "My Booking" lookup; serves the entrance guide in its window
   notify.js       every email + SMS the system sends
   cron.js         daily check-in / check-out reminders
   sms.js          inbound SMS webhook (guest texts the number)
 lib/google.js   Google Sheets auth + read/write helpers
+lib/access.js   sessions, what each role may see, the guide's time window
 ```
 
 **Data lives in a Google Sheet, not a database.** The first tab holds two
@@ -40,7 +42,8 @@ to, but be careful: every POST rewrites the sheet, so don't hand-edit while
 someone is using the dashboard.
 
 The browser also keeps a `localStorage` cache so the UI is instant, then hydrates
-from the Sheet on load. Writes go to both. Remote writes are serialized through a
+from the Sheet on load. Writes go to both. What the browser gets from the Sheet
+depends on who is signed in (see "Who can see what" below). Remote writes are serialized through a
 queue (`_enqueueWrite`, around line 137 of `index.html`) because each POST is a
 read-modify-write of the entire sheet — two concurrent writes would clobber each
 other. If you add a new write path, send it through that queue.
@@ -67,17 +70,17 @@ won't respond locally unless you run `vercel dev` with the env vars below.
 
 | What | Around line |
 | --- | --- |
-| Default photos (`DEFAULT_PHOTOS`) | 38 |
-| Default property config — rates, times, PINs, host name (`defaultConfig`) | 46 |
-| Length-of-stay discounts: 7 nights 10%, 14 nights 25% (`LOS_DISCOUNTS`) | 81 |
-| localStorage + Sheet sync | 114 |
-| Colors and fonts (`P`, `F`, `FD`, `FH`) | 183 |
-| Shared UI pieces — Modal, Input, Button, Gallery, Lightbox, Calendar | 196–450 |
-| Main app state (`function App()`) | 412 |
-| PIN login screen | 760 |
-| Guest-facing site | 775 |
-| Cleaning view | 1041 |
-| Admin dashboard and its tab list | 1089 |
+| Default photos (`DEFAULT_PHOTOS`) | 39 |
+| Default property config — rates, times, PINs, host name (`defaultConfig`) | 48 |
+| Length-of-stay discounts: 7 nights 10%, 14 nights 25% (`LOS_DISCOUNTS`) | 83 |
+| localStorage + Sheet sync, session, booking lookup | 115 |
+| Colors and fonts (`P`, `F`, `FD`, `FH`) | 225 |
+| Shared UI pieces — Modal, Input, Button, Gallery, Lightbox, Calendar | 239–450 |
+| Main app state (`function App()`) | 454 |
+| PIN login screen | 841 |
+| Guest-facing site | 856 |
+| Cleaning view | 1126 |
+| Admin dashboard and its tab list | 1174 |
 
 The admin tabs are Property, Calendar, Bookings, Pricing, Requests, Messages,
 Metrics, Guide and Settings. Each one is a `{aTab==="…" && (…)}` block under the
@@ -100,14 +103,32 @@ change what a brand-new install starts with.
    instructions (`approved`) taken from `config.paymentInstructions`. Payment
    happens off-site — there's no payment processor wired in.
 3. The host marks it paid and it becomes a confirmed **booking** with a code like
-   `TRA-7K2QX`. The guest gets a confirmation; the cleaner gets the dates and
-   times.
+   `TRA-7K2QX`. The guest gets a confirmation with their personal entrance-guide
+   link (`/?booking=TRA-7K2QX`); the cleaner gets the dates and times.
 4. `api/cron.js` runs daily at 14:00 UTC and sends check-in reminders three days
    out and on the day, check-out reminders two days out and on the day. Each
    reminder sets a flag on the booking *before* sending, so re-running the job
    never double-sends.
-5. Guests look up their booking with their code. `TEST1234` is a permanent test
-   code for checking the guest portal.
+5. Guests look up their booking with their code (or open their link). The
+   **entrance guide** (door code, Wi-Fi, house info) shows only for a confirmed
+   booking, from midnight N days before check-in (Guide tab, default 2) until
+   check-out time on the check-out day. `TEST1234` is a permanent test code for
+   checking the guest portal; it shows placeholder text, never the real guide.
+
+### Who can see what
+
+All of this is enforced in `lib/access.js`, on the server.
+
+| Who | Gets |
+| --- | --- |
+| Anyone (no session) | Property info, prices, which dates are taken. No guide, PINs, payment instructions, guest names/emails/phones or booking codes. Can submit a request or message. |
+| A guest with a booking code | Their own booking and, inside its window, the guide (`/api/booking`). |
+| Cleaning PIN | The above plus guest names and dates for the turnover list. Read-only. |
+| Admin PIN | Everything, and the only role that can change data or send host emails (approve, confirm, cancel, reply). |
+
+PINs are checked by the server, which returns a signed session token (7 days,
+held in memory only, so a reload logs out). Changing a PIN in Settings signs out
+every session made with the old one.
 
 Guests who text the Twilio number hit `api/sms.js`, which threads the message
 onto their booking (matched by phone number) into the **Messages** tab and alerts
@@ -133,6 +154,9 @@ email is skipped rather than erroring.
 | `CRON_SECRET` | Optional. If set, `/api/cron` rejects anything without `Authorization: Bearer <secret>`; Vercel sends it automatically. |
 | `NOTIFY_TEST_EMAIL` | Optional safety net: redirects **every** email to one inbox, subject prefixed `[TEST → real@address]`. Set it while testing so real guests are never contacted, and unset it to go live. |
 | `NOTIFY_TEST_SMS` | Same idea for SMS. |
+| `SESSION_SECRET` | Optional. Signs admin/cleaning sessions. If unset, a key is derived from the service account's private key, which works fine. |
+| `SITE_URL` | Optional. Base of the guide links in emails; defaults to `https://troy-ave-rental.vercel.app`. Set it if you add a custom domain. |
+| `PROPERTY_TZ` | Optional. Time zone for the guide window; defaults to `America/New_York`. |
 
 Services in play: **Vercel** (hosting and cron), **GitHub** (source), **Google
 Sheets** (data), **Resend** (email), **Twilio** (SMS). The Twilio number is
@@ -155,12 +179,17 @@ toll-free and carrier-verified against `/optin.html`, `/privacy.html` and
   `checkin`, `checkout`, `message`, `reply`, `cancelled`. Copy changes go here.
   Its `send(kind, data)` is exported so `api/cron.js` can call it directly
   without an HTTP hop.
-- **Recipients are resolved server-side** from the Sheet config and never sent by
-  the browser, so `/api/notify` can't be abused as an open mail relay. Keep it
-  that way if you extend it.
-- **PINs aren't real security.** They live in the Sheet config and gate the admin
-  and cleaning views client-side. Fine for this use — just don't put anything
-  genuinely sensitive behind them.
+- **Host and cleaner recipients are resolved server-side** from the Sheet config,
+  and every host-initiated kind (approved, confirmed, cancelled, reply, reminders)
+  needs an admin session. Only `request` and `message` are open to the public
+  page. Keep it that way if you extend it.
+- **Never send the guide itself** in an email or text. Send the link
+  (`guideLink(code)` in `lib/access.js`); the server decides if it's open.
+- **New config fields are private by default.** The public view is a whitelist
+  (`PUBLIC_CONFIG` in `lib/access.js`). Add a field there only if the guest page
+  needs it.
+- **PINs are checked on the server now, but they're still PINs.** Use 6+ digits.
+  A 4-digit PIN can be guessed in a few hours of scripted tries.
 
 ---
 

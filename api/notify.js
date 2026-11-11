@@ -25,8 +25,16 @@
 //
 // The per-kind dispatch is exported as `send(kind, data)` so other serverless
 // functions (e.g. the /api/cron reminder job) can reuse it without an HTTP hop.
+//
+// Over HTTP, only "request" and "message" (sent by the public guest page) are
+// open; every other kind needs an admin session (X-Session, see lib/access.js).
+//
+// The entrance guide itself is never put in an email or text. Confirmations and
+// check-in reminders carry the guest's personal link (/?booking=CODE), which
+// only shows the guide while the booking is confirmed and inside its window.
 
 const { openSheet } = require("../lib/google");
+const { roleOf, guideLink, guideState, guideWindow } = require("../lib/access");
 
 const BRAND = { bg: "#FBF8F4", card: "#FFFFFF", ink: "#2C2622", muted: "#7A7167", accent: "#B0744A", accentLt: "#F3E7DD", line: "#ECE5DC" };
 
@@ -146,6 +154,20 @@ function smsSummary(d, cfg) {
 // Join SMS sections with a blank line between, dropping any empty ones.
 const smsJoin = (...parts) => parts.filter(Boolean).join("\n\n");
 
+// The guest's personal entrance-guide link, phrased for when it opens.
+function guideInfo(d, cfg) {
+  if (!d.code || !d.checkIn || !d.checkOut) return null;
+  const link = guideLink(d.code);
+  const ready = guideState({ ...d, status: "confirmed" }, cfg) === "open";
+  const opens = niceDate(guideWindow(d, cfg).opens.slice(0, 10));
+  const when = ready ? "is ready" : `unlocks ${opens}`;
+  return {
+    sms: `Your entrance guide (how to get in, Wi-Fi, house info) ${when}: ${link}`,
+    text: `Your entrance guide (how to get in, Wi-Fi, house info) ${when} at ${link} and works until check-out.`,
+    html: `<div style="margin-top:16px;padding:14px 16px;background:${BRAND.accentLt};border:1px solid ${BRAND.accent};border-radius:12px;font-size:14px;line-height:1.6;color:${BRAND.ink}"><b>Your entrance guide</b><div style="margin:4px 0 12px">How to get in, Wi-Fi and house info. ${ready ? "It's ready now" : `It unlocks ${esc(opens)}`} and works until check-out.</div><a href="${link}" style="display:inline-block;background:${BRAND.accent};color:#fff;text-decoration:none;font-weight:600;padding:10px 16px;border-radius:10px">Open my entrance guide</a></div>`,
+  };
+}
+
 /* ---------- per-kind builders ---------- */
 function buildCustomer(kind, d, cfg) {
   const host = cfg.hostName || "your host";
@@ -242,41 +264,43 @@ function buildCustomer(kind, d, cfg) {
     };
   }
   if (kind === "confirmed") {
+    const g = guideInfo(d, cfg);
     return {
       email: {
         subject: `Reservation confirmed — ${cfg.propertyName || "your stay"} 🎉`,
         html: emailShell(
           "You're confirmed 🎉",
-          `<p style="margin:0 0 16px;line-height:1.6">Hi ${esc(d.guestName) || "there"}, your reservation is confirmed — we can't wait to host you! Here are your details:</p>${summaryTable(d, cfg)}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">Keep your booking code handy — you can use it on our site under “My Booking” to view your check-in guide and message us.</p>`,
+          `<p style="margin:0 0 16px;line-height:1.6">Hi ${esc(d.guestName) || "there"}, your reservation is confirmed — we can't wait to host you! Here are your details:</p>${summaryTable(d, cfg)}${g ? g.html : ""}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">Keep your booking code handy — enter it on our site under “My Booking” to message us or open your guide.</p>`,
           cfg
         ),
-        text: `Hi ${d.guestName || "there"}, your booking at ${cfg.propertyName} is CONFIRMED for ${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}. ${sign}`,
+        text: `Hi ${d.guestName || "there"}, your booking at ${cfg.propertyName} is CONFIRMED for ${niceDate(d.checkIn)} to ${niceDate(d.checkOut)}.${g ? " " + g.text : ""} ${sign}`,
       },
       sms: smsJoin(
         `Hi ${d.guestName || "there"}, your reservation at ${cfg.propertyName || "our place"} is CONFIRMED — we can't wait to host you! 🎉`,
         smsSummary(d, cfg),
-        `Keep your booking code handy — use it under "My Booking" on our site to view your check-in guide.`,
+        g ? g.sms : "",
         footer(cfg)
       ),
     };
   }
   if (kind === "checkin") {
     const soon = d.when !== "today";
-    const guide = d.code ? ` Your booking code ${d.code} unlocks your check-in guide on our site.` : "";
+    const g = guideInfo(d, cfg);
     return {
       email: {
         subject: soon ? `Your stay is coming up — ${cfg.propertyName || "your booking"}` : `Check-in today — ${cfg.propertyName || "your booking"} 🔑`,
         html: emailShell(
           soon ? "Your stay is coming up" : "Check-in is today 🔑",
-          `<p style="margin:0 0 16px;line-height:1.6">Hi ${esc(d.guestName) || "there"}, ${soon ? `your stay at ${esc(cfg.propertyName) || "our place"} is almost here!` : `today's the day — welcome!`} Here's what you need:</p>${summaryTable(d, cfg)}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">Check-in is from ${esc(cfg.checkInTime) || "the afternoon"}.${esc(guide)}</p>`,
+          `<p style="margin:0 0 16px;line-height:1.6">Hi ${esc(d.guestName) || "there"}, ${soon ? `your stay at ${esc(cfg.propertyName) || "our place"} is almost here!` : `today's the day — welcome!`} Here's what you need:</p>${summaryTable(d, cfg)}<p style="margin:16px 0 0;font-size:13px;color:${BRAND.muted}">Check-in is from ${esc(cfg.checkInTime) || "the afternoon"}.</p>${g ? g.html : ""}`,
           cfg
         ),
-        text: `Hi ${d.guestName || "there"}, ${soon ? `your stay at ${cfg.propertyName} is coming up` : `check-in at ${cfg.propertyName} is today`} — ${niceDate(d.checkIn)}${cfg.checkInTime ? ` from ${cfg.checkInTime}` : ""}.${guide} ${sign}`,
+        text: `Hi ${d.guestName || "there"}, ${soon ? `your stay at ${cfg.propertyName} is coming up` : `check-in at ${cfg.propertyName} is today`} — ${niceDate(d.checkIn)}${cfg.checkInTime ? ` from ${cfg.checkInTime}` : ""}.${g ? " " + g.text : ""} ${sign}`,
       },
       sms: smsJoin(
         `Hi ${d.guestName || "there"}, ${soon ? `your stay at ${cfg.propertyName || "our place"} is coming up!` : `today's the day — check-in at ${cfg.propertyName || "our place"} is today! 🔑`}`,
         smsSummary(d, cfg),
-        `Check-in is from ${cfg.checkInTime || "the afternoon"}.${guide}`,
+        `Check-in is from ${cfg.checkInTime || "the afternoon"}.`,
+        g ? g.sms : "",
         footer(cfg)
       ),
     };
@@ -390,6 +414,7 @@ function buildCleaner(d, cfg, kind) {
 }
 
 const KINDS = ["request", "approved", "confirmed", "checkin", "checkout", "message", "reply", "cancelled"];
+const GUEST_KINDS = ["request", "message"]; // sent by the public page; the rest need an admin session
 
 // Per-kind dispatch. Loads config from the Sheet (unless a cfg is supplied by a
 // caller that already has it, e.g. the cron job batching many sends). Returns
@@ -430,14 +455,19 @@ async function send(kind, data, cfgMaybe) {
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Session");
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "method not allowed" });
 
   try {
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
     if (!KINDS.includes(body.kind)) return res.status(400).json({ error: "unknown kind" });
-    const result = await send(body.kind, body.data || {});
+    const { data: store } = await openSheet();
+    const cfg = store.config || {};
+    if (!GUEST_KINDS.includes(body.kind) && roleOf(req, cfg) !== "admin") {
+      return res.status(401).json({ error: "admin session required" });
+    }
+    const result = await send(body.kind, body.data || {}, cfg);
     res.status(200).json(result);
   } catch (e) {
     res.status(500).json({ error: String((e && e.message) || e) });
